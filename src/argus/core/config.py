@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://argus:argus@localhost:5432/argus"
     db_ready_timeout_seconds: float = 2.0
 
+    # Auth. Dev defaults only - MUST be overridden via environment/secret
+    # manager anywhere beyond the local machine.
+    jwt_secret: str = "dev-only-insecure-jwt-secret-0123456789abcdef"  # >=32 bytes for HS256
+    jwt_algorithm: str = "HS256"
+    jwt_expiry_minutes: int = 60
+    admin_api_key: str = "dev-admin-key-change-me"
+
 
 @lru_cache
 def get_settings() -> Settings:
