@@ -1,0 +1,30 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: argus        # dev-only credential; overridden outside local dev
+      POSTGRES_DB: argus
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argus -d argus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      ARGUS_ENV: dev
+      ARGUS_DATABASE_URL: postgresql+asyncpg://argus:argus@db:5432/argus
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
