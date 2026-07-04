@@ -8,12 +8,36 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      ARGUS_DATABASE_URL: postgresql+asyncpg://argus:argus@localhost:5432/argus
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: Provision app role (non-superuser, RLS enforced)
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c \
+            "CREATE ROLE argus LOGIN PASSWORD 'argus' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -c \
+            "CREATE DATABASE argus OWNER argus;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -d argus -c \
+            "CREATE EXTENSION IF NOT EXISTS vector;"
       - name: Install dependencies
         run: uv sync
       - name: Lint
         run: uv run ruff check .
-      - name: Tests
+      - name: Tests (unit + integration)
         run: uv run pytest -q

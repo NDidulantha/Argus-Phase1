@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="ARGUS — AI Threat Hunting Platform",
+        title="Threat Hunting Platform",
         version="0.1.0",
         lifespan=lifespan,
     )

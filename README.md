@@ -1,4 +1,4 @@
-# ARGUS — AI Threat Hunting Platform
+# AI Threat Hunting Platform
 
 Multi-tenant, AI-assisted threat hunting platform for MSSP SOCs.
 Phase 1: platform foundation (API service, PostgreSQL + pgvector, structured
@@ -10,6 +10,7 @@ logging, tests, CI). No AI components yet by design — see docs/adr/.
 uv sync                                  # create .venv and install from uv.lock
 cp .env.example .env
 docker compose up -d db                  # start Postgres (pgvector)
+                                         # first run creates the non-superuser app role via db/init/
 uv run uvicorn argus.main:app --reload     # run the API locally
 ```
 

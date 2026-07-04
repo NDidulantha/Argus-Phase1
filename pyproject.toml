@@ -1,7 +1,7 @@
 [project]
 name = "argus"
 version = "0.1.0"
-description = "ARGUS — AI-powered threat hunting platform for MSSP SOCs"
+description = "AI-powered Threat Hunting Platform for MSSP SOCs"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -10,6 +10,7 @@ dependencies = [
     "structlog>=24.4",
     "sqlalchemy[asyncio]>=2.0.35",
     "asyncpg>=0.29",
+    "alembic>=1.13",
 ]
 
 [dependency-groups]

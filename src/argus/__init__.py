@@ -1,1 +1,1 @@
-"""ARGUS core package."""
+"""Threat Hunting Platform core package."""
