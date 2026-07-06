@@ -15,6 +15,8 @@ from sqlalchemy import func, select
 from argus.api.deps import CurrentUser, get_current_user
 from argus.infrastructure.db.models import EventAggregate, NormalizedEvent, RawEvent
 from argus.infrastructure.db.session import tenant_session
+from argus.services.enrichment import lookup_indicator
+from argus.services.indicators import extract_indicators
 from argus.services.ingestion import ingest_events
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -167,6 +169,70 @@ async def list_aggregates(
         items = [AggregateOut.model_validate(r) for r in rows]
 
     return AggregateListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+class EnrichedIndicatorOut(BaseModel):
+    indicator_type: str
+    value: str
+    results: list[dict]
+
+
+class EnrichEventOut(BaseModel):
+    event_id: int
+    indicators: list[EnrichedIndicatorOut]
+
+
+async def _enrich_event(session, event: NormalizedEvent) -> list[EnrichedIndicatorOut]:
+    out: list[EnrichedIndicatorOut] = []
+    for indicator_type, value in extract_indicators(event):
+        entries = await lookup_indicator(session, indicator_type, value)
+        out.append(
+            EnrichedIndicatorOut(
+                indicator_type=indicator_type,
+                value=value,
+                results=[
+                    {
+                        "provider": e.provider,
+                        "score": e.score,
+                        "verdict": e.verdict,
+                        "cached": e.cached,
+                    }
+                    for e in entries
+                ],
+            )
+        )
+    return out
+
+
+@router.post("/aggregates/{aggregate_id}/enrich", response_model=EnrichEventOut)
+async def enrich_aggregate(
+    aggregate_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> EnrichEventOut:
+    """Enrich a signal via its sample event: click one aggregate, get the
+    reputation picture for the indicators it carries."""
+    async with tenant_session(current.tenant_id) as s:
+        agg = await s.get(EventAggregate, aggregate_id)
+        if agg is None or agg.sample_normalized_event_id is None:
+            raise HTTPException(404, "Aggregate not found")
+        event = await s.get(NormalizedEvent, agg.sample_normalized_event_id)
+        if event is None:
+            raise HTTPException(404, "Aggregate sample event not found")
+        indicators = await _enrich_event(s, event)
+    return EnrichEventOut(event_id=event.id, indicators=indicators)
+
+
+@router.post("/{event_id}/enrich", response_model=EnrichEventOut)
+async def enrich_event(
+    event_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> EnrichEventOut:
+    async with tenant_session(current.tenant_id) as s:
+        event = await s.get(NormalizedEvent, event_id)
+        if event is None:
+            raise HTTPException(404, "Event not found")
+        indicators = await _enrich_event(s, event)
+    return EnrichEventOut(event_id=event_id, indicators=indicators)
 
 
 @router.get("/{event_id}", response_model=EventDetailOut)
