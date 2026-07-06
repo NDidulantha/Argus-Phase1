@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argus.connectors.registry import get_normalizer
 from argus.infrastructure.db.models import NormalizedEvent, RawEvent
 from argus.services.aggregation import record_aggregate
+from argus.services.mitre import link_techniques
 
 log = structlog.get_logger()
 
@@ -112,6 +113,11 @@ async def ingest_events(
                     await record_aggregate(session, tenant_id, normalized_event)
             except Exception as exc:  # noqa: BLE001 - aggregation must not block ingestion
                 log.warning("aggregation_failed", error=str(exc)[:200])
+            try:
+                async with session.begin_nested():
+                    await link_techniques(session, tenant_id, normalized_event)
+            except Exception as exc:  # noqa: BLE001 - mitre linking is non-critical
+                log.warning("mitre_linking_failed", error=str(exc)[:200])
         except Exception as exc:  # noqa: BLE001 - raw is kept; normalization skipped
             log.warning(
                 "normalization_failed", source=source, raw_event_id=raw.id, error=str(exc)[:200]

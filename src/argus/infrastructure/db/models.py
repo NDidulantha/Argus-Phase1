@@ -158,3 +158,43 @@ class EnrichmentCache(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
+
+
+class MitreTechnique(Base):
+    """ATT&CK technique catalog. GLOBAL reference data (no tenant_id/RLS).
+    Sub-techniques (T1110.001) carry parent_id -> T1110."""
+
+    __tablename__ = "mitre_techniques"
+
+    technique_id: Mapped[str] = mapped_column(Text, primary_key=True)  # e.g. T1110
+    name: Mapped[str] = mapped_column(Text)
+    tactics: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_subtechnique: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class EventTechnique(Base):
+    """Per-tenant link: a normalized event maps to an ATT&CK technique.
+    Tenant-owned -> RLS. Makes the bare 'T1110' strings first-class."""
+
+    __tablename__ = "event_techniques"
+    __table_args__ = (
+        UniqueConstraint("normalized_event_id", "technique_id", name="uq_event_technique"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    normalized_event_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("normalized_events.id", ondelete="CASCADE")
+    )
+    technique_id: Mapped[str] = mapped_column(Text)
+    event_time: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    # Provenance of this mapping: vendor (upstream supplied), rules
+    # (deterministic classifier), or ai (Phase 3 inference). Auditable
+    # answer to "why does ARGUS think this event is T1003?".
+    mapping_source: Mapped[str] = mapped_column(Text, server_default=text("'vendor'"))
+    confidence: Mapped[int] = mapped_column(SmallInteger, server_default=text("100"))

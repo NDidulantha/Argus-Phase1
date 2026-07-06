@@ -41,9 +41,18 @@ class MordorNormalizer:
             ("Image", "process_image"),
             ("CommandLine", "command_line"),
             ("ParentImage", "parent_image"),
+            ("TargetImage", "target_image"),
+            ("TargetFilename", "target_filename"),
+            ("Details", "details"),
         ):
             if payload.get(key) is not None:
                 attributes[attr] = payload[key]
+
+        # Sysmon often carries the decisive indicator (e.g. the accessed
+        # process) only in the Message body. Keep it available to the rule
+        # classifier without bloating storage: cap length.
+        if payload.get("Message"):
+            attributes["message_excerpt"] = str(payload["Message"])[:500]
 
         return NormalizedEventData(
             event_time=_parse_time(payload),

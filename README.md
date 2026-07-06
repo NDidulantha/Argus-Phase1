@@ -43,3 +43,23 @@ uv run ruff check .       # lint
 - `docs/adr/` — architecture decision records
 
 Dependency rule: `api -> domain <- infrastructure`. Nothing imports "up".
+
+
+## Daily workflow
+
+```bash
+make up            # start Postgres (data persists across restarts)
+make run           # start the API (http://localhost:8000/docs)
+make seed          # (re)provision home-lab tenant, prints a 90-day token
+make test          # run tests
+```
+
+Save the token from `make seed` into `.env` as `ARGUS_TOKEN=...`, then
+auto-load it per shell by adding to ~/.bashrc:
+`set -a; source ~/projects/argus/argus/.env; set +a`
+
+### DANGER
+`docker compose down -v` DELETES the database volume (all tenants and
+events). Use `make stop` or `make down` for normal work. Only run `-v`
+by hand when you deliberately want a clean slate — then `make seed` and
+reload datasets afterward.
