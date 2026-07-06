@@ -53,7 +53,7 @@ async def test_wazuh_events_are_ingested_and_normalized(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 202, r.text
-    assert r.json() == {"received": 2, "normalized": 2}
+    assert r.json() == {"received": 2, "normalized": 2, "failed": 0}
 
     import uuid as _uuid
 
@@ -75,7 +75,7 @@ async def test_unknown_source_stores_raw_only(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert r.status_code == 202
-    assert r.json() == {"received": 1, "normalized": 0}  # raw kept, no connector yet
+    assert r.json() == {"received": 1, "normalized": 0, "failed": 0}  # raw kept, no connector yet
 
 
 async def test_ingestion_requires_token(client):

@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 DB_URL = os.environ.get(
-    "ARGUS_DATABASE_URL", "postgresql+asyncpg://argus:argus@localhost:5432/argus"
+    "ARGUS_DATABASE_URL", "postgresql+asyncpg://argus:argus@localhost:5432/argus_test"
 )
 
 

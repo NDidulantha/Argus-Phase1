@@ -10,3 +10,8 @@ CREATE DATABASE argus OWNER argus;
 
 \connect argus
 CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Dedicated database for the test suite: pytest must never touch dev data.
+CREATE DATABASE argus_test OWNER argus;
+\connect argus_test
+CREATE EXTENSION IF NOT EXISTS vector;

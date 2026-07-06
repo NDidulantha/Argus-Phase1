@@ -28,6 +28,7 @@ class EventsIn(BaseModel):
 class EventsOut(BaseModel):
     received: int
     normalized: int
+    failed: int
 
 
 class NormalizedEventOut(BaseModel):
@@ -71,7 +72,9 @@ async def ingest(
     # tenant_id comes from the TOKEN, never from the request body.
     async with tenant_session(current.tenant_id) as session:
         result = await ingest_events(session, current.tenant_id, body.source, body.events)
-    return EventsOut(received=result.received, normalized=result.normalized)
+    return EventsOut(
+        received=result.received, normalized=result.normalized, failed=result.failed
+    )
 
 
 @router.get("", response_model=EventListOut)

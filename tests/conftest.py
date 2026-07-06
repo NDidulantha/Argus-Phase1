@@ -1,3 +1,13 @@
+import os
+
+# Tests must NEVER touch the dev database: running pytest once wiped the
+# dev tenants table (and, via CASCADE, all ingested lab events). Point the
+# whole suite at a dedicated database unless the environment (e.g. CI)
+# explicitly says otherwise.
+os.environ.setdefault(
+    "ARGUS_DATABASE_URL", "postgresql+asyncpg://argus:argus@localhost:5432/argus_test"
+)
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
