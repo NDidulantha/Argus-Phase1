@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     jwt_expiry_minutes: int = 60
     admin_api_key: str = "dev-admin-key-change-me"
 
+    # Enrichment providers: empty key = provider disabled.
+    virustotal_api_key: str = ""
+    abuseipdb_api_key: str = ""
+    enrichment_cache_ttl_hours: int = 24
+
 
 @lru_cache
 def get_settings() -> Settings:

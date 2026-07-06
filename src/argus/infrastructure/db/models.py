@@ -133,3 +133,28 @@ class EventAggregate(Base):
         BigInteger, ForeignKey("normalized_events.id", ondelete="SET NULL"), nullable=True
     )
     is_open: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+
+
+class EnrichmentCache(Base):
+    """Cached threat-intel verdicts. GLOBAL table (no tenant_id, no RLS):
+    indicator reputation is world knowledge, not tenant data. Sharing it
+    means one provider lookup serves every tenant — and protects API
+    quotas, which free-tier intel providers enforce aggressively."""
+
+    __tablename__ = "enrichment_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "indicator_type", "indicator_value", name="uq_enrichment_indicator"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    provider: Mapped[str] = mapped_column(Text)
+    indicator_type: Mapped[str] = mapped_column(Text)
+    indicator_value: Mapped[str] = mapped_column(Text)
+    score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    verdict: Mapped[str] = mapped_column(Text, server_default=text("'unknown'"))
+    raw: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    fetched_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
