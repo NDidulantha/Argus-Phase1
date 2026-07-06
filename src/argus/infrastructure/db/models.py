@@ -104,3 +104,32 @@ class NormalizedEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
+
+
+class EventAggregate(Base):
+    """Rollup of repeated normalized events sharing a signature.
+
+    Signature = category + host + stable rule key (rule_id/event_id), so
+    thousands of near-identical events collapse into one row with a count
+    and first/last-seen. Downstream stages (and analysts) reason over
+    signals, not repetition. `is_open` supports future window-closing.
+    """
+
+    __tablename__ = "event_aggregates"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    signature_hash: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    action: Mapped[str | None] = mapped_column(Text, nullable=True)  # sample
+    host_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity_max: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    count: Mapped[int] = mapped_column(BigInteger, server_default=text("1"))
+    first_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    last_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    sample_normalized_event_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("normalized_events.id", ondelete="SET NULL"), nullable=True
+    )
+    is_open: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))

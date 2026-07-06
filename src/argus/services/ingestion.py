@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argus.connectors.registry import get_normalizer
 from argus.infrastructure.db.models import NormalizedEvent, RawEvent
+from argus.services.aggregation import record_aggregate
 
 log = structlog.get_logger()
 
@@ -90,23 +91,27 @@ async def ingest_events(
         try:
             n = normalizer.normalize(payload)
             async with session.begin_nested():
-                session.add(
-                    NormalizedEvent(
-                        tenant_id=tenant_id,
-                        raw_event_id=raw.id,
-                        event_time=n.event_time,
-                        category=n.category,
-                        action=n.action,
-                        severity=_clean_severity(n.severity),
-                        host_name=n.host_name,
-                        user_name=n.user_name,
-                        src_ip=_clean_ip(n.src_ip),
-                        dst_ip=_clean_ip(n.dst_ip),
-                        attributes=n.attributes,
-                    )
+                normalized_event = NormalizedEvent(
+                    tenant_id=tenant_id,
+                    raw_event_id=raw.id,
+                    event_time=n.event_time,
+                    category=n.category,
+                    action=n.action,
+                    severity=_clean_severity(n.severity),
+                    host_name=n.host_name,
+                    user_name=n.user_name,
+                    src_ip=_clean_ip(n.src_ip),
+                    dst_ip=_clean_ip(n.dst_ip),
+                    attributes=n.attributes,
                 )
+                session.add(normalized_event)
                 await session.flush()
             normalized_count += 1
+            try:
+                async with session.begin_nested():
+                    await record_aggregate(session, tenant_id, normalized_event)
+            except Exception as exc:  # noqa: BLE001 - aggregation must not block ingestion
+                log.warning("aggregation_failed", error=str(exc)[:200])
         except Exception as exc:  # noqa: BLE001 - raw is kept; normalization skipped
             log.warning(
                 "normalization_failed", source=source, raw_event_id=raw.id, error=str(exc)[:200]

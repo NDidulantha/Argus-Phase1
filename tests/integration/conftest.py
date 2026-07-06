@@ -40,17 +40,19 @@ def migrated_db() -> None:
         pytest.skip("integration tests need Postgres: docker compose up -d db")
 
     async def reset_schema() -> None:
-        # Drop only ARGUS tables (not the whole schema): DROP SCHEMA CASCADE
-        # would also destroy extensions like pgvector, which the migration
-        # cannot recreate unless the app role is superuser.
+        # Drop every table in public (discovered, not hardcoded — a fixed
+        # list silently rots each time a migration adds a table). Extensions
+        # like pgvector are preserved, unlike DROP SCHEMA CASCADE.
         engine = create_async_engine(DB_URL, isolation_level="AUTOCOMMIT")
         async with engine.connect() as conn:
-            await conn.execute(
-                text(
-                    "DROP TABLE IF EXISTS normalized_events, raw_events, users, "
-                    "tenants, alembic_version CASCADE"
+            tables = (
+                await conn.execute(
+                    text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
                 )
-            )
+            ).scalars().all()
+            if tables:
+                joined = ", ".join(f'"{t}"' for t in tables)
+                await conn.execute(text(f"DROP TABLE IF EXISTS {joined} CASCADE"))
         await engine.dispose()
 
     asyncio.run(reset_schema())

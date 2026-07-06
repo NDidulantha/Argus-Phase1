@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 
 from argus.api.deps import CurrentUser, get_current_user
-from argus.infrastructure.db.models import NormalizedEvent, RawEvent
+from argus.infrastructure.db.models import EventAggregate, NormalizedEvent, RawEvent
 from argus.infrastructure.db.session import tenant_session
 from argus.services.ingestion import ingest_events
 
@@ -114,6 +114,59 @@ async def list_events(
         items = [NormalizedEventOut.model_validate(r) for r in rows]
 
     return EventListOut(items=items, total=total, limit=limit, offset=offset)
+
+
+class AggregateOut(BaseModel):
+    id: int
+    category: str
+    action: str | None
+    host_name: str | None
+    severity_max: int | None
+    count: int
+    first_seen: datetime
+    last_seen: datetime
+    sample_normalized_event_id: int | None
+
+    model_config = {"from_attributes": True}
+
+
+class AggregateListOut(BaseModel):
+    items: list[AggregateOut]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/aggregates", response_model=AggregateListOut)
+async def list_aggregates(
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    category: Annotated[str | None, Query(max_length=100)] = None,
+    host: Annotated[str | None, Query(max_length=200)] = None,
+    min_count: Annotated[int, Query(ge=1)] = 1,
+    order: Annotated[str, Query(pattern=r"^(count|recent)$")] = "count",
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> AggregateListOut:
+    """The de-noised view: one row per signal, with volume and time span."""
+    filters = [EventAggregate.count >= min_count]
+    if category is not None:
+        filters.append(EventAggregate.category == category)
+    if host is not None:
+        filters.append(EventAggregate.host_name.ilike(f"%{host}%"))
+    ordering = (
+        EventAggregate.count.desc() if order == "count" else EventAggregate.last_seen.desc()
+    )
+
+    async with tenant_session(current.tenant_id) as s:
+        total = await s.scalar(select(func.count(EventAggregate.id)).where(*filters)) or 0
+        rows = (
+            await s.scalars(
+                select(EventAggregate).where(*filters).order_by(ordering).limit(limit).offset(offset)
+            )
+        ).all()
+        items = [AggregateOut.model_validate(r) for r in rows]
+
+    return AggregateListOut(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/{event_id}", response_model=EventDetailOut)
