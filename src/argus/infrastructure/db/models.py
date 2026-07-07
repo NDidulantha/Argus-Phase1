@@ -198,3 +198,58 @@ class EventTechnique(Base):
     # answer to "why does ARGUS think this event is T1003?".
     mapping_source: Mapped[str] = mapped_column(Text, server_default=text("'vendor'"))
     confidence: Mapped[int] = mapped_column(SmallInteger, server_default=text("100"))
+
+
+class Entity(Base):
+    """A node in the Evidence Graph: a security object (user, host,
+    process, file, ip, hash, ...). Deduplicated per tenant by
+    (entity_type, entity_key) so the same host across many events is ONE
+    node whose relationships accumulate. Tenant-owned -> RLS."""
+
+    __tablename__ = "entities"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "entity_type", "entity_key", name="uq_entity_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    entity_type: Mapped[str] = mapped_column(Text)   # user|host|process|file|ip|hash
+    entity_key: Mapped[str] = mapped_column(Text)    # normalized identity value
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attributes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    first_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    last_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+
+class EntityEdge(Base):
+    """A typed, directed relationship between two entities, sourced from a
+    normalized event (evidence provenance). E.g. process --spawned-->
+    process, process --accessed--> file, user --authenticated_from--> host.
+    Tenant-owned -> RLS."""
+
+    __tablename__ = "entity_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "src_entity_id", "dst_entity_id", "relation",
+            name="uq_edge_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    src_entity_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("entities.id", ondelete="CASCADE")
+    )
+    dst_entity_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("entities.id", ondelete="CASCADE")
+    )
+    relation: Mapped[str] = mapped_column(Text)   # spawned|accessed|connected_to|...
+    observation_count: Mapped[int] = mapped_column(BigInteger, server_default=text("1"))
+    first_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    last_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
