@@ -1,6 +1,15 @@
 from fastapi import APIRouter
 
-from argus.api.v1.endpoints import auth, enrichment, events, graph, health, mitre, tenants
+from argus.api.v1.endpoints import (
+    auth,
+    enrichment,
+    events,
+    evidence,
+    graph,
+    health,
+    mitre,
+    tenants,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -10,5 +19,7 @@ api_router.include_router(events.router)
 api_router.include_router(enrichment.router)
 api_router.include_router(mitre.router)
 api_router.include_router(graph.router)
+api_router.include_router(evidence.router)
 api_router.include_router(mitre.router)
 api_router.include_router(graph.router)
+api_router.include_router(evidence.router)

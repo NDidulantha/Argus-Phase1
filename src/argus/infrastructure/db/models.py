@@ -253,3 +253,35 @@ class EntityEdge(Base):
     observation_count: Mapped[int] = mapped_column(BigInteger, server_default=text("1"))
     first_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
     last_seen: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+
+
+class EvidenceObject(Base):
+    """A correlated, scored cluster of related activity — the unit the AI
+    reasons over (never raw logs; ADR 0010). Groups events on a host within
+    a time window, carrying the distinct techniques, tactics and entities
+    involved plus an explainable score. Tenant-owned -> RLS."""
+
+    __tablename__ = "evidence_objects"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    host_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    window_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True))
+    event_count: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    technique_ids: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    tactics: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    entity_ids: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    score: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
+    score_breakdown: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(Text, server_default=text("'open'"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
