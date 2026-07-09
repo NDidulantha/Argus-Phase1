@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     abuseipdb_api_key: str = ""
     enrichment_cache_ttl_hours: int = 24
 
+    # Embeddings for RAG over evidence objects.
+    embedding_provider: str = "hashing-v1"
+
 
 @lru_cache
 def get_settings() -> Settings:

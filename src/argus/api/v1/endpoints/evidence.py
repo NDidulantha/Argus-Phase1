@@ -12,6 +12,7 @@ from argus.api.deps import CurrentUser, get_current_user
 from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
 from argus.infrastructure.db.session import admin_session, tenant_session
 from argus.services.correlation import correlate_tenant
+from argus.services.rag import embed_evidence, find_similar
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
@@ -64,6 +65,8 @@ async def correlate(
 ) -> CorrelateOut:
     async with tenant_session(current.tenant_id) as s:
         n = await correlate_tenant(s, current.tenant_id, window_minutes)
+        await s.flush()
+        await embed_evidence(s, current.tenant_id)
     return CorrelateOut(evidence_objects_written=n)
 
 
@@ -135,3 +138,41 @@ async def get_evidence(
         techniques=techniques,
         entities=[EntityBrief.model_validate(e) for e in entities],
     )
+
+
+class SimilarEntry(BaseModel):
+    id: int
+    host_name: str | None
+    score: int
+    technique_ids: list[str]
+    similarity: float  # 1 - cosine distance
+
+
+class SimilarOut(BaseModel):
+    evidence_id: int
+    similar: list[SimilarEntry]
+
+
+@router.get("/{evidence_id}/similar", response_model=SimilarOut)
+async def similar_evidence(
+    evidence_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    k: Annotated[int, Query(ge=1, le=20)] = 5,
+) -> SimilarOut:
+    """Retrieve past evidence objects similar to this one (RAG memory)."""
+    async with tenant_session(current.tenant_id) as s:
+        obj = await s.get(EvidenceObject, evidence_id)
+        if obj is None:
+            raise HTTPException(404, "Evidence object not found")
+        results = await find_similar(s, current.tenant_id, evidence_id, k)
+        similar = [
+            SimilarEntry(
+                id=o.id,
+                host_name=o.host_name,
+                score=o.score,
+                technique_ids=o.technique_ids,
+                similarity=round(1.0 - dist, 4),
+            )
+            for o, dist in results
+        ]
+    return SimilarOut(evidence_id=evidence_id, similar=similar)

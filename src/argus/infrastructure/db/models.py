@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -279,6 +280,9 @@ class EvidenceObject(Base):
         JSONB, server_default=text("'{}'::jsonb")
     )
     status: Mapped[str] = mapped_column(Text, server_default=text("'open'"))
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
+    embedding_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
