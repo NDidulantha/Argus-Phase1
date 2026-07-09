@@ -12,7 +12,9 @@ from argus.api.deps import CurrentUser, get_current_user
 from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
 from argus.infrastructure.db.session import admin_session, tenant_session
 from argus.services.correlation import correlate_tenant
+from argus.services.investigation import investigate_evidence
 from argus.services.rag import embed_evidence, find_similar
+from argus.services.reasoning_providers import available_providers
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
@@ -176,3 +178,56 @@ async def similar_evidence(
             for o, dist in results
         ]
     return SimilarOut(evidence_id=evidence_id, similar=similar)
+
+
+class InvestigateOut(BaseModel):
+    evidence_id: int
+    narrative: str
+    provider: str
+    model: str
+    techniques: list[dict]
+    similar_count: int
+
+
+class ProvidersOut(BaseModel):
+    providers: list[str]
+    default: str
+
+
+@router.get("/reasoning/providers", response_model=ProvidersOut)
+async def reasoning_providers(
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> ProvidersOut:
+    from argus.core.config import get_settings
+
+    return ProvidersOut(
+        providers=available_providers(), default=get_settings().reasoning_provider
+    )
+
+
+@router.post("/{evidence_id}/investigate", response_model=InvestigateOut)
+async def investigate(
+    evidence_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    provider: Annotated[str | None, Query(pattern=r"^(ollama|anthropic)$")] = None,
+) -> InvestigateOut:
+    """Run the AI reasoning agent over a curated evidence object and return
+    an explainable, analyst-ready narrative. Local (Ollama) by default."""
+    async with tenant_session(current.tenant_id) as s:
+        try:
+            result = await investigate_evidence(s, current.tenant_id, evidence_id, provider)
+        except RuntimeError as e:
+            raise HTTPException(503, str(e)) from None
+        except Exception as e:  # noqa: BLE001 - provider/network errors -> 502
+            raise HTTPException(502, f"reasoning provider error: {str(e)[:200]}") from None
+    if result is None:
+        raise HTTPException(404, "Evidence object not found")
+
+    return InvestigateOut(
+        evidence_id=result.evidence_id,
+        narrative=result.narrative,
+        provider=result.provider,
+        model=result.model,
+        techniques=[{"id": t["id"], "name": t["name"]} for t in result.context.techniques],
+        similar_count=len(result.context.similar),
+    )

@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     # Embeddings for RAG over evidence objects.
     embedding_provider: str = "hashing-v1"
 
+    # Reasoning (LLM). Ollama is the local, private, free default; Anthropic
+    # is an optional drop-in used only when an API key is configured.
+    reasoning_provider: str = "ollama"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:7b"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+
 
 @lru_cache
 def get_settings() -> Settings:
