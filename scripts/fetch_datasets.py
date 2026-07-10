@@ -47,11 +47,20 @@ def download(name: str, url: str) -> None:
         print(f"    FAILED {name}: {e}", file=sys.stderr)
 
 
+# EVTX-Attack-Samples: the whole repo as one zip (hundreds of .evtx).
+EVTX_SAMPLES_ZIP = "https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES/archive/refs/heads/master.zip"
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--url", action="append", default=[], help="extra zip URL(s)")
     p.add_argument("--name", action="append", default=[], help="name(s) for --url")
+    p.add_argument("--evtx-samples", action="store_true",
+                   help="download the full EVTX-Attack-Samples repo (~hundreds of .evtx)")
     args = p.parse_args()
+
+    if args.evtx_samples:
+        download("evtx-attack-samples", EVTX_SAMPLES_ZIP)
 
     for name, url in DATASETS.items():
         download(name, url)

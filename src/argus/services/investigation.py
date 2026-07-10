@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argus.domain.reasoning import ReasoningRequest
 from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
+from argus.services.cti import lookup_cti
 from argus.services.grounding import check_grounding
 from argus.services.rag import find_similar
 from argus.services.reasoning_providers import get_reasoning_provider
@@ -65,6 +66,7 @@ class InvestigationContext:
     score: int
     score_breakdown: dict[str, Any]
     similar: list[dict[str, Any]] = field(default_factory=list)
+    cti: list[dict[str, Any]] = field(default_factory=list)
 
 
 async def _assemble_context(
@@ -96,6 +98,19 @@ async def _assemble_context(
         ).all()
         entities = [{"type": e.entity_type, "key": e.entity_key} for e in ents][:40]
 
+    # CTI grounding: query real-world intel for the evidence's IP/hash
+    # indicators, so the narrative can cite facts instead of guessing.
+    cti_findings: list[dict[str, Any]] = []
+    for e in entities:
+        itype = e["type"]
+        if itype == "ip":
+            for f in await lookup_cti(session, "ip", e["key"]):
+                if f.found:
+                    cti_findings.append({
+                        "indicator": e["key"], "provider": f.provider,
+                        "summary": f.summary, "malware": f.malware,
+                        "reference": f.reference_url,
+                    })
     similar_raw = await find_similar(session, tenant_id, obj.id, k=3)
     similar = [
         {
@@ -115,6 +130,7 @@ async def _assemble_context(
         score=obj.score,
         score_breakdown=obj.score_breakdown or {},
         similar=similar,
+        cti=cti_findings,
     )
 
 
@@ -143,6 +159,19 @@ def _render_prompt(ctx: InvestigationContext) -> str:
         "ALLOWED NAMES (do not mention any process/host/user/IP outside this list): "
         + (", ".join(allowed) if allowed else "(none)")
     )
+    if ctx.cti:
+        lines.append("")
+        lines.append("=== REAL-WORLD THREAT INTELLIGENCE (cite these; do not invent) ===")
+        for c in ctx.cti:
+            lines.append(
+                f"- {c['indicator']}: {c['summary']} "
+                f"[source: {c['provider']}, ref: {c.get('reference') or 'n/a'}]"
+            )
+    else:
+        lines.append("")
+        lines.append("=== REAL-WORLD THREAT INTELLIGENCE ===")
+        lines.append("- No external threat intel found for the indicators in this evidence. "
+                     "Do NOT speculate about known actors or campaigns.")
     if ctx.similar:
         lines.append("")
         lines.append("=== SIMILAR PAST EVIDENCE (organizational memory / RAG) ===")

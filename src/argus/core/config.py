@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Enrichment providers: empty key = provider disabled.
     virustotal_api_key: str = ""
     abuseipdb_api_key: str = ""
+    # abuse.ch unified Auth-Key (free): ThreatFox, MalwareBazaar, URLhaus
+    abuse_ch_auth_key: str = ""
+    cti_cache_ttl_hours: int = 24
     enrichment_cache_ttl_hours: int = 24
 
     # Embeddings for RAG over evidence objects.

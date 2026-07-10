@@ -28,6 +28,12 @@ mitre:         ## load the ATT&CK catalog
 fetch:         ## download attack datasets to ~/argus-datasets (persistent)
 	uv run python scripts/fetch_datasets.py
 
+fetch-evtx:    ## download the full EVTX-Attack-Samples repo (~hundreds of .evtx)
+	uv run python scripts/fetch_datasets.py --evtx-samples
+
+replay-evtx:   ## parse + replay all .evtx under ~/argus-datasets
+	uv run python scripts/replay_evtx.py --path ~/argus-datasets/evtx-attack-samples.zip
+
 replay:        ## replay every dataset in ~/argus-datasets
 	@for f in ~/argus-datasets/*.zip; do \
 		echo "replaying $$f"; \

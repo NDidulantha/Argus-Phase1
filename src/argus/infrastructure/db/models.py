@@ -289,3 +289,25 @@ class EvidenceObject(Base):
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
+
+
+class CTICache(Base):
+    """Cached CTI findings. GLOBAL (no tenant_id/RLS): threat intel about
+    an indicator is world knowledge shared by all tenants, and caching
+    protects provider rate limits."""
+
+    __tablename__ = "cti_cache"
+    __table_args__ = (
+        UniqueConstraint("provider", "indicator_type", "indicator_value",
+                         name="uq_cti_indicator"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    provider: Mapped[str] = mapped_column(Text)
+    indicator_type: Mapped[str] = mapped_column(Text)
+    indicator_value: Mapped[str] = mapped_column(Text)
+    found: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    finding: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    fetched_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
