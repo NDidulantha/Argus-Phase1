@@ -31,3 +31,15 @@ evidence only, and deterministic code owns data assembly.
   gap when a key is available.
 - Prompt-only structure today; JSON-schema-constrained output is a future
   hardening step.
+
+
+## Amendment (2026-07-09): grounding enforcement
+Local 7B output was observed inventing artifacts (dumpcap.exe, wireshark.exe)
+and cross-referencing hosts not in the evidence. Two-layer fix:
+1. Prompt: strict system rules + an explicit ALLOWED NAMES allow-list of
+   the evidence's entity keys.
+2. Deterministic post-check (services/grounding.py): scans the narrative
+   for binaries/offensive-tool names absent from the evidence and returns
+   grounded:bool + unsupported_terms. Surfaced in the API response so
+   analysts see exactly where the AI over-reached. Explainability applied
+   to the AI itself.

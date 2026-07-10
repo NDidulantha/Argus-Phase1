@@ -21,8 +21,10 @@ class FakeProvider:
     async def complete(self, req):
         # echo that we received the curated evidence (proves grounding)
         assert "ATT&CK TECHNIQUES OBSERVED" in req.prompt
+        # deliberately fabricate a tool not in the evidence
         return ReasoningResponse(
-            text="SUMMARY: credential dumping suspected.\nCONFIDENCE: High.",
+            text=("SUMMARY: credential dumping via mimikatz suspected. "
+                  "lsass.exe was accessed.\nCONFIDENCE: High."),
             provider="fake",
             model="fake-1",
         )
@@ -80,6 +82,9 @@ async def test_investigate_produces_narrative(client):
     assert "credential dumping" in body["narrative"].lower()
     assert body["provider"] == "fake"
     assert any(t["id"] == "T1003.001" for t in body["techniques"])
+    # grounding check caught the fabricated tool name
+    assert body["grounded"] is False
+    assert "mimikatz" in body["unsupported_terms"]
 
 
 async def test_investigate_missing_evidence_404(client):

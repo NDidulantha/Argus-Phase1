@@ -22,15 +22,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from argus.domain.reasoning import ReasoningRequest
 from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
+from argus.services.grounding import check_grounding
 from argus.services.rag import find_similar
 from argus.services.reasoning_providers import get_reasoning_provider
 
 _SYSTEM = (
-    "You are a senior SOC threat-hunting analyst. You reason ONLY over the "
-    "structured evidence provided. Be precise and conservative. Never invent "
-    "events, IPs, or hosts not present in the evidence. Always state confidence "
-    "and give at least one benign / false-positive explanation. Map claims to "
-    "the ATT&CK techniques provided; do not fabricate technique IDs."
+    "You are a senior SOC threat-hunting analyst. You reason STRICTLY over the "
+    "structured evidence provided, and NOTHING ELSE.\n"
+    "HARD RULES:\n"
+    "- You may ONLY name processes, hosts, users, and IPs that appear in the "
+    "EVIDENCE below. If a process/tool is not listed, you MUST NOT mention it. "
+    "Never introduce tool names (e.g. mimikatz, wireshark, dumpcap) unless they "
+    "are explicitly in the evidence.\n"
+    "- You may ONLY cite the ATT&CK technique IDs listed. Never invent IDs.\n"
+    "- When you make a claim, ground it in a specific listed technique or entity.\n"
+    "- If evidence is insufficient for a section, say so plainly rather than "
+    "speculating with invented detail.\n"
+    "- Always give a confidence level and at least one benign / false-positive "
+    "explanation."
 )
 
 _INSTRUCTIONS = """Analyze the security evidence below and produce a concise
@@ -121,9 +130,19 @@ def _render_prompt(ctx: InvestigationContext) -> str:
         tac = ", ".join(t["tactics"]) or "n/a"
         lines.append(f"- {t['id']} {t['name']} [tactics: {tac}]")
     lines.append("")
-    lines.append("=== ENTITIES INVOLVED ===")
-    for e in ctx.entities:
-        lines.append(f"- {e['type']}: {e['key']}")
+    lines.append("=== ENTITIES INVOLVED (the ONLY processes/hosts/users/IPs you may mention) ===")
+    if ctx.entities:
+        for e in ctx.entities:
+            lines.append(f"- {e['type']}: {e['key']}")
+    else:
+        lines.append("- (no entities recorded for this evidence)")
+    # explicit allow-list restated so a small model cannot miss it
+    allowed = sorted({e["key"] for e in ctx.entities})
+    lines.append("")
+    lines.append(
+        "ALLOWED NAMES (do not mention any process/host/user/IP outside this list): "
+        + (", ".join(allowed) if allowed else "(none)")
+    )
     if ctx.similar:
         lines.append("")
         lines.append("=== SIMILAR PAST EVIDENCE (organizational memory / RAG) ===")
@@ -144,6 +163,8 @@ class InvestigationResult:
     provider: str
     model: str
     context: InvestigationContext
+    grounded: bool = True
+    unsupported_terms: list = field(default_factory=list)
 
 
 async def investigate_evidence(
@@ -163,10 +184,14 @@ async def investigate_evidence(
 
     req = ReasoningRequest(system=_SYSTEM, prompt=_render_prompt(ctx))
     resp = await provider.complete(req)
+    allowed_keys = {e["key"] for e in ctx.entities}
+    grounding = check_grounding(resp.text, allowed_keys)
     return InvestigationResult(
         evidence_id=evidence_id,
         narrative=resp.text,
         provider=resp.provider,
         model=resp.model,
         context=ctx,
+        grounded=grounding["grounded"],
+        unsupported_terms=grounding["unsupported_terms"],
     )

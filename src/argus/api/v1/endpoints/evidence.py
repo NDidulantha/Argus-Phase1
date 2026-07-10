@@ -187,6 +187,8 @@ class InvestigateOut(BaseModel):
     model: str
     techniques: list[dict]
     similar_count: int
+    grounded: bool
+    unsupported_terms: list[str]  # AI-mentioned artifacts NOT in the evidence
 
 
 class ProvidersOut(BaseModel):
@@ -230,4 +232,6 @@ async def investigate(
         model=result.model,
         techniques=[{"id": t["id"], "name": t["name"]} for t in result.context.techniques],
         similar_count=len(result.context.similar),
+        grounded=result.grounded,
+        unsupported_terms=result.unsupported_terms,
     )
