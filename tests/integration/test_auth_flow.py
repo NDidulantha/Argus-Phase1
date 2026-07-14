@@ -93,3 +93,43 @@ async def test_admin_endpoints_require_admin_key(client):
         headers={"X-Admin-Key": "wrong-key"},
     )
     assert r.status_code == 401
+
+
+async def test_change_password_flow(client):
+    await _provision(client)
+    r = await client.post(
+        "/api/v1/auth/login",
+        json={"tenant_slug": "bank-a", "email": "analyst@bank-a.example",
+              "password": "a-strong-password!"},
+    )
+    auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+    # wrong current password is rejected
+    r = await client.post(
+        "/api/v1/auth/password",
+        json={"current_password": "wrong", "new_password": "a-new-strong-password!"},
+        headers=auth,
+    )
+    assert r.status_code == 403
+
+    r = await client.post(
+        "/api/v1/auth/password",
+        json={"current_password": "a-strong-password!",
+              "new_password": "a-new-strong-password!"},
+        headers=auth,
+    )
+    assert r.status_code == 204
+
+    # old password no longer works, new one does
+    r = await client.post(
+        "/api/v1/auth/login",
+        json={"tenant_slug": "bank-a", "email": "analyst@bank-a.example",
+              "password": "a-strong-password!"},
+    )
+    assert r.status_code == 401
+    r = await client.post(
+        "/api/v1/auth/login",
+        json={"tenant_slug": "bank-a", "email": "analyst@bank-a.example",
+              "password": "a-new-strong-password!"},
+    )
+    assert r.status_code == 200

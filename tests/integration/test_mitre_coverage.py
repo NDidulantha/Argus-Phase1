@@ -100,3 +100,14 @@ async def test_coverage_is_tenant_scoped(client):
     )
     r = await client.get("/api/v1/mitre/coverage", headers=auth_b)
     assert r.json()["techniques_seen"] == 0
+
+
+async def test_matrix_returns_full_catalog(client):
+    auth = await _auth(client)
+    r = await client.get("/api/v1/mitre/matrix", headers=auth)
+    assert r.status_code == 200
+    items = r.json()
+    # catalog fixtures inserted by this module's client fixture
+    ids = {t["technique_id"] for t in items}
+    assert len(ids) == len(items)  # unique
+    assert all({"technique_id", "name", "tactics", "is_subtechnique"} <= set(t) for t in items)

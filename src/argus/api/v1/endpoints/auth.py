@@ -4,11 +4,12 @@ from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from argus.api.deps import CurrentUser, get_current_user
 from argus.api.v1.schemas import LoginRequest, MeOut, TokenOut
-from argus.core.security import DUMMY_HASH, create_access_token, verify_password
+from argus.core.security import DUMMY_HASH, create_access_token, hash_password, verify_password
 from argus.infrastructure.db.models import Tenant, User
 from argus.infrastructure.db.session import admin_session, tenant_session
 
@@ -52,3 +53,21 @@ async def login(body: LoginRequest) -> TokenOut:
 @router.get("/me", response_model=MeOut)
 async def me(current: Annotated[CurrentUser, Depends(get_current_user)]) -> MeOut:
     return MeOut(user_id=current.user_id, tenant_id=current.tenant_id, role=current.role)
+
+
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=10, max_length=200)
+
+
+@router.post("/password", status_code=204)
+async def change_password(
+    body: PasswordChangeIn,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> None:
+    async with tenant_session(current.tenant_id) as s:
+        user = await s.get(User, current.user_id)
+        if user is None or not verify_password(user.password_hash, body.current_password):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password didn't match")
+        user.password_hash = hash_password(body.new_password)
+        log.info("password_changed", user_id=str(current.user_id))

@@ -97,3 +97,25 @@ async def test_neighborhood_and_tenant_scope(client):
 
     # tenant B sees no entities
     assert (await client.get("/api/v1/graph/entities", headers=auth_b)).json()["total"] == 0
+
+
+async def test_graph_overview_returns_entities_and_edges(client):
+    auth = await _auth(client, "graph-ov")
+    await client.post(
+        "/api/v1/events",
+        json={
+            "source": "securitydatasets",
+            "events": [_sysmon("C:\\x\\powershell.exe", target="C:\\y\\lsass.exe")],
+        },
+        headers=auth,
+    )
+    ov = (await client.get("/api/v1/graph/overview", headers=auth)).json()
+    assert ov["total_entities"] >= 2
+    keys = {e["entity_key"] for e in ov["entities"]}
+    assert {"powershell.exe", "lsass.exe"} <= keys
+    ids = {e["id"] for e in ov["entities"]}
+    # every edge's endpoints are in the returned entity set
+    assert all(
+        e["src_entity_id"] in ids and e["dst_entity_id"] in ids for e in ov["edges"]
+    )
+    assert any(e["relation"] == "accessed" for e in ov["edges"])

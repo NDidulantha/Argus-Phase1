@@ -46,6 +46,49 @@ class NeighborhoodOut(BaseModel):
     entities: list[EntityOut]
 
 
+class GraphOverviewOut(BaseModel):
+    entities: list[EntityOut]
+    edges: list[EdgeOut]
+    total_entities: int
+
+
+@router.get("/overview", response_model=GraphOverviewOut)
+async def graph_overview(
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    limit: Annotated[int, Query(ge=1, le=300)] = 150,
+) -> GraphOverviewOut:
+    """The graph in one call: most-recent entities plus every edge whose
+    both endpoints made the cut — what a force-directed canvas starts from."""
+    filters = []
+    if search:
+        filters.append(Entity.entity_key.ilike(f"%{search.lower()}%"))
+    async with tenant_session(current.tenant_id) as s:
+        total = await s.scalar(select(func.count(Entity.id)).where(*filters)) or 0
+        rows = (
+            await s.scalars(
+                select(Entity).where(*filters).order_by(Entity.last_seen.desc()).limit(limit)
+            )
+        ).all()
+        ids = [e.id for e in rows]
+        edges = (
+            (
+                await s.scalars(
+                    select(EntityEdge).where(
+                        EntityEdge.src_entity_id.in_(ids), EntityEdge.dst_entity_id.in_(ids)
+                    )
+                )
+            ).all()
+            if ids
+            else []
+        )
+    return GraphOverviewOut(
+        entities=[EntityOut.model_validate(e) for e in rows],
+        edges=[EdgeOut.model_validate(e) for e in edges],
+        total_entities=total,
+    )
+
+
 @router.get("/entities", response_model=EntityListOut)
 async def list_entities(
     current: Annotated[CurrentUser, Depends(get_current_user)],

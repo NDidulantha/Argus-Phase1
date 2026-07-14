@@ -291,6 +291,100 @@ class EvidenceObject(Base):
     )
 
 
+class Case(Base):
+    """An analyst investigation case: groups evidence objects under a title,
+    severity, workflow status (new -> investigating -> contained -> resolved
+    -> closed) and an assignee. Tenant-owned -> RLS."""
+
+    __tablename__ = "cases"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str] = mapped_column(Text, server_default=text("'medium'"))
+    status: Mapped[str] = mapped_column(Text, server_default=text("'new'"))
+    assignee_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+
+
+class CaseEvidence(Base):
+    """Case <-> evidence link. Carries tenant_id so RLS applies to the
+    association itself, not just its endpoints."""
+
+    __tablename__ = "case_evidence"
+
+    case_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("cases.id", ondelete="CASCADE"), primary_key=True
+    )
+    evidence_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("evidence_objects.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+
+
+class CaseNote(Base):
+    """Analyst note on a case. Tenant-owned -> RLS."""
+
+    __tablename__ = "case_notes"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    case_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("cases.id", ondelete="CASCADE"))
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+
+
+class Connector(Base):
+    """A configured data-source connection (Wazuh indexer, XDR, ...) for a
+    tenant. Credentials are write-only at the API layer — stored here,
+    never serialized back out. Tenant-owned -> RLS."""
+
+    __tablename__ = "connectors"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    vendor: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    endpoint_url: Mapped[str] = mapped_column(Text)
+    credentials: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    verify_tls: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    field_mapping: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(Text, server_default=text("'unconfigured'"))
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+
+
 class CTICache(Base):
     """Cached CTI findings. GLOBAL (no tenant_id/RLS): threat intel about
     an indicator is world knowledge shared by all tenants, and caching

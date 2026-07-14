@@ -50,6 +50,29 @@ class CoverageOut(BaseModel):
     coverage: list[CoverageEntry]
 
 
+class MatrixTechnique(BaseModel):
+    technique_id: str
+    name: str
+    tactics: list[str]
+    is_subtechnique: bool
+    parent_id: str | None
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/matrix", response_model=list[MatrixTechnique])
+async def matrix(
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> list[MitreTechnique]:
+    """The full catalog for the tactics × techniques matrix — coverage
+    shows what a tenant HAS seen; the matrix needs everything, so the
+    gaps are visible too."""
+    async with admin_session() as s:
+        return (
+            await s.scalars(select(MitreTechnique).order_by(MitreTechnique.technique_id))
+        ).all()
+
+
 @router.get("/techniques/{technique_id}", response_model=TechniqueOut)
 async def get_technique(
     technique_id: str,
