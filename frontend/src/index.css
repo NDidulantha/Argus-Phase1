@@ -1,0 +1,179 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/geist-mono';
+
+/*
+ * ARGUS design tokens — see argus/ui-design.md §2.
+ * Dark is the default and only theme; the raw variables below use the
+ * exact token names from the spec, then map into Tailwind utilities.
+ */
+:root {
+  --bg-base: #0f0a1e;
+  --bg-surface: #160e28;
+  --bg-elevated: #1e1436;
+  --bg-hover: #281a45;
+  --border-subtle: #2e1d4a;
+  --border-strong: #3d2a5e;
+  --accent: #2fe6a0;
+  --accent-dim: #1d9e75;
+  --accent-bg: #123528;
+  --text-primary: #edebf5;
+  --text-secondary: #a79fc4;
+  --text-tertiary: #6e6690;
+  --silver: #b8b5c9;
+
+  --sev-critical: #f26d6d;
+  --sev-high: #f2a25a;
+  --sev-medium: #ebcb5e;
+  --sev-low: #5eeab4;
+  --sev-info: #7f9cf2;
+}
+
+@theme inline {
+  --color-*: initial;
+
+  /* Surfaces: bg-base, bg-surface, bg-elevated, bg-hover */
+  --color-base: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-elevated: var(--bg-elevated);
+  --color-hover: var(--bg-hover);
+
+  /* Borders: border-subtle, border-strong */
+  --color-subtle: var(--border-subtle);
+  --color-strong: var(--border-strong);
+
+  /* Accent (emerald = AI / healthy / success, never severity) */
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-bg: var(--accent-bg);
+
+  /* Text: text-primary, text-secondary, text-tertiary */
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --color-silver: var(--silver);
+
+  /* Severity — badges, dots, and graph nodes only; never large fills */
+  --color-sev-critical: var(--sev-critical);
+  --color-sev-high: var(--sev-high);
+  --color-sev-medium: var(--sev-medium);
+  --color-sev-low: var(--sev-low);
+  --color-sev-info: var(--sev-info);
+
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', 'IBM Plex Mono', monospace;
+
+  /* Type scale (§2.2) — two weights only: 400 and 500 */
+  --text-page-title: 22px;
+  --text-page-title--font-weight: 500;
+  --text-section: 18px;
+  --text-section--font-weight: 500;
+  --text-card-title: 15px;
+  --text-card-title--font-weight: 500;
+  --text-body: 14px;
+  --text-body--line-height: 1.6;
+  --text-label: 12.5px;
+  --text-data: 12.5px;
+
+  /* Geometry (§2.3): 8px controls, 12px cards */
+  --radius-control: 8px;
+  --radius-card: 12px;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-base font-sans text-body text-primary antialiased;
+}
+
+/* Investigation narrative (rendered markdown) — quiet, analyst-grade */
+.narrative :is(p, ul, ol) {
+  margin-bottom: 0.5rem;
+}
+
+.narrative :is(p, ul, ol):last-child {
+  margin-bottom: 0;
+}
+
+.narrative :is(ul, ol) {
+  padding-left: 1.25rem;
+}
+
+.narrative ul {
+  list-style: disc;
+}
+
+.narrative ol {
+  list-style: decimal;
+}
+
+.narrative strong {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.narrative code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.narrative :is(h1, h2, h3, h4) {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+/* Export to PDF = print: keep only the report sheet on paper */
+@media print {
+  body {
+    background: white;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .report-sheet,
+  .report-sheet * {
+    visibility: visible;
+  }
+
+  .report-sheet {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+    max-width: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
+
+/* Scanning-ring rotation — the AI "watching" motif (§2.3) */
+@keyframes scan-ring {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-scan-ring {
+  animation: scan-ring 2s linear infinite;
+}
+
+/* Login (§4.3): the ring turns once on load, then settles */
+.animate-scan-ring-once {
+  animation: scan-ring 2s ease-in-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-scan-ring,
+  .animate-scan-ring-once {
+    animation: none;
+  }
+}
