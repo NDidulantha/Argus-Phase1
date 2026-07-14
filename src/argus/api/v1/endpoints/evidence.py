@@ -53,6 +53,8 @@ class EntityBrief(BaseModel):
     entity_type: str
     entity_key: str
 
+    model_config = {"from_attributes": True}
+
 
 class EvidenceDetailOut(EvidenceOut):
     score_breakdown: dict[str, Any]
