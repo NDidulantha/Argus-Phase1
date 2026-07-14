@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from argus.domain.reasoning import ReasoningRequest
 from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
 from argus.services.cti import lookup_cti
-from argus.services.grounding import check_grounding
+from argus.services.grounding import check_grounding, check_mitre_claims, extract_technique_ids
 from argus.services.rag import find_similar
 from argus.services.reasoning_providers import get_reasoning_provider
 
@@ -213,14 +213,55 @@ async def investigate_evidence(
 
     req = ReasoningRequest(system=_SYSTEM, prompt=_render_prompt(ctx))
     resp = await provider.complete(req)
+
+    # Artifact grounding: names must come from the evidence entity set.
     allowed_keys = {e["key"] for e in ctx.entities}
     grounding = check_grounding(resp.text, allowed_keys)
+
+    # MITRE grounding: claims must match the loaded ATT&CK catalog (the
+    # same source of truth the prompt was built from) and this evidence's
+    # own technique mapping.
+    catalog, known_tactics = await _mitre_ground_truth(
+        session, extract_technique_ids(resp.text)
+    )
+    mitre_violations = check_mitre_claims(
+        resp.text,
+        set(obj.technique_ids or []),
+        catalog,
+        known_tactics,
+    )
+
+    unsupported = [
+        f"artifact not in evidence: {t}" for t in grounding["unsupported_terms"]
+    ] + mitre_violations
     return InvestigationResult(
         evidence_id=evidence_id,
         narrative=resp.text,
         provider=resp.provider,
         model=resp.model,
         context=ctx,
-        grounded=grounding["grounded"],
-        unsupported_terms=grounding["unsupported_terms"],
+        grounded=len(unsupported) == 0,
+        unsupported_terms=unsupported,
     )
+
+
+async def _mitre_ground_truth(
+    session: AsyncSession, cited_ids: set[str]
+) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """Catalog rows for the cited technique IDs + the full tactic
+    vocabulary, both straight from the loaded ATT&CK catalog."""
+    known_tactics: set[str] = set()
+    for tactics in (await session.scalars(select(MitreTechnique.tactics))).all():
+        known_tactics.update(tactics or [])
+
+    catalog: dict[str, dict[str, Any]] = {}
+    if cited_ids:
+        rows = (
+            await session.scalars(
+                select(MitreTechnique).where(MitreTechnique.technique_id.in_(cited_ids))
+            )
+        ).all()
+        catalog = {
+            r.technique_id: {"name": r.name, "tactics": list(r.tactics or [])} for r in rows
+        }
+    return catalog, known_tactics

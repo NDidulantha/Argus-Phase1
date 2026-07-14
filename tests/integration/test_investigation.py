@@ -82,9 +82,9 @@ async def test_investigate_produces_narrative(client):
     assert "credential dumping" in body["narrative"].lower()
     assert body["provider"] == "fake"
     assert any(t["id"] == "T1003.001" for t in body["techniques"])
-    # grounding check caught the fabricated tool name
+    # grounding check caught the fabricated tool name, labeled by category
     assert body["grounded"] is False
-    assert "mimikatz" in body["unsupported_terms"]
+    assert "artifact not in evidence: mimikatz" in body["unsupported_terms"]
 
 
 async def test_investigate_missing_evidence_404(client):
