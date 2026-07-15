@@ -1,18 +1,24 @@
 """Evidence object endpoints: trigger correlation, list scored evidence,
-drill into one. Evidence objects are the analyst-ready, AI-ready unit."""
+drill into one, run + replay persisted investigations."""
 
+import json
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from argus.api.deps import CurrentUser, get_current_user
-from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
+from argus.infrastructure.db.models import Entity, EvidenceObject, Investigation, MitreTechnique
 from argus.infrastructure.db.session import admin_session, tenant_session
 from argus.services.correlation import correlate_tenant
-from argus.services.investigation import investigate_evidence
+from argus.services.investigation import (
+    run_investigation,
+    run_to_completion,
+    serialize_investigation,
+)
 from argus.services.rag import embed_evidence, find_similar
 from argus.services.reasoning_providers import available_providers
 
@@ -182,15 +188,38 @@ async def similar_evidence(
     return SimilarOut(evidence_id=evidence_id, similar=similar)
 
 
+class InvestigateIn(BaseModel):
+    directives: list[str] = Field(default_factory=list, max_length=10)
+
+
 class InvestigateOut(BaseModel):
     evidence_id: int
+    investigation_id: int
     narrative: str
     provider: str
     model: str
     techniques: list[dict]
     similar_count: int
     grounded: bool
-    unsupported_terms: list[str]  # AI-mentioned artifacts NOT in the evidence
+    unsupported_terms: list[str]  # unsupported artifact / MITRE claims
+    directives: list[str]
+    stages: list[dict]
+
+
+class InvestigationRunOut(BaseModel):
+    investigation_id: int
+    evidence_id: int
+    status: str
+    provider: str | None
+    model: str | None
+    narrative: str | None
+    grounded: bool | None
+    unsupported_terms: list[str]
+    directives: list[str]
+    stages: list[dict]
+    started_at: str | None
+    finished_at: str | None
+    duration_ms: int | None
 
 
 class ProvidersOut(BaseModel):
@@ -214,26 +243,80 @@ async def investigate(
     evidence_id: int,
     current: Annotated[CurrentUser, Depends(get_current_user)],
     provider: Annotated[str | None, Query(pattern=r"^(ollama|anthropic)$")] = None,
+    body: InvestigateIn | None = None,
 ) -> InvestigateOut:
-    """Run the AI reasoning agent over a curated evidence object and return
-    an explainable, analyst-ready narrative. Local (Ollama) by default."""
-    async with tenant_session(current.tenant_id) as s:
-        try:
-            result = await investigate_evidence(s, current.tenant_id, evidence_id, provider)
-        except RuntimeError as e:
-            raise HTTPException(503, str(e)) from None
-        except Exception as e:  # noqa: BLE001 - provider/network errors -> 502
-            raise HTTPException(502, f"reasoning provider error: {str(e)[:200]}") from None
-    if result is None:
-        raise HTTPException(404, "Evidence object not found")
-
-    return InvestigateOut(
-        evidence_id=result.evidence_id,
-        narrative=result.narrative,
-        provider=result.provider,
-        model=result.model,
-        techniques=[{"id": t["id"], "name": t["name"]} for t in result.context.techniques],
-        similar_count=len(result.context.similar),
-        grounded=result.grounded,
-        unsupported_terms=result.unsupported_terms,
+    """Run the AI reasoning pipeline over a curated evidence object and
+    return an explainable, analyst-ready narrative. Local (Ollama) by
+    default. The run is persisted; analyst directives steer the prompt."""
+    final = await run_to_completion(
+        current.tenant_id,
+        evidence_id,
+        provider,
+        body.directives if body else None,
+        created_by=current.user_id,
     )
+    if final["type"] == "error":
+        raise HTTPException(final["status_code"], final["detail"])
+    inv = final["investigation"]
+    return InvestigateOut(
+        evidence_id=evidence_id,
+        investigation_id=inv["investigation_id"],
+        narrative=inv["narrative"],
+        provider=inv["provider"],
+        model=inv["model"],
+        techniques=final["techniques"],
+        similar_count=final["similar_count"],
+        grounded=inv["grounded"],
+        unsupported_terms=inv["unsupported_terms"],
+        directives=inv["directives"],
+        stages=inv["stages"],
+    )
+
+
+@router.post("/{evidence_id}/investigate/stream")
+async def investigate_stream(
+    evidence_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    provider: Annotated[str | None, Query(pattern=r"^(ollama|anthropic)$")] = None,
+    body: InvestigateIn | None = None,
+) -> StreamingResponse:
+    """The same pipeline as SSE: one event per stage, then complete/error —
+    the workspace's reasoning stream fills in live, with server timestamps."""
+
+    async def events():
+        async for event in run_investigation(
+            current.tenant_id,
+            evidence_id,
+            provider,
+            body.directives if body else None,
+            created_by=current.user_id,
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/{evidence_id}/investigations", response_model=list[InvestigationRunOut])
+async def investigation_history(
+    evidence_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> list[InvestigationRunOut]:
+    """Past runs for this evidence object, newest first — investigations
+    are auditable records, not ephemeral chat."""
+    async with tenant_session(current.tenant_id) as s:
+        if await s.get(EvidenceObject, evidence_id) is None:
+            raise HTTPException(404, "Evidence object not found")
+        rows = (
+            await s.scalars(
+                select(Investigation)
+                .where(Investigation.evidence_id == evidence_id)
+                .order_by(Investigation.started_at.desc(), Investigation.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return [InvestigationRunOut(**serialize_investigation(r)) for r in rows]

@@ -1,8 +1,8 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
-import { FolderPlus, Sparkles } from 'lucide-react'
+import { FolderPlus, Sparkles, X } from 'lucide-react'
 import { AlertQueueTable } from '../components/AlertQueueTable'
 import { ArgusMark } from '../components/ArgusMark'
 import { AttackChain } from '../components/workspace/AttackChain'
@@ -13,8 +13,8 @@ import { ReasoningStream, type StreamEntry } from '../components/workspace/Reaso
 import { useAuthedQuery } from '../hooks/useAuthedQuery'
 import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/api'
-import { ApiError } from '../lib/api'
-import { formatCount, formatUtcWindow } from '../lib/format'
+import type { InvestigationRun, StageEvent } from '../lib/api'
+import { formatCount, formatUtcWindow, relativeAge } from '../lib/format'
 import { parseNarrative } from '../lib/narrative'
 
 export function Workspace() {
@@ -55,31 +55,46 @@ function sectionTitle(title: string): string {
   return (t[0].toUpperCase() + t.slice(1)).replace('att&ck', 'ATT&CK')
 }
 
-// Scope → Collector → Correlation → MITRE → Reasoning → Grounding;
-// analyst steering notes trail the pipeline, ordered among themselves by time.
+// Causal order: evidence context (Scope → Collector → Correlation → MITRE),
+// then the run's own provenance trail, then narrative + grounding, then
+// analyst steering notes. Within a rank, entries order by time.
 const STAGE_RANK: Record<string, number> = {
   scope: 0,
   collector: 1,
   correlation: 2,
   mitre: 3,
-  reasoning: 4,
-  'reasoning-error': 4,
-  grounding: 5,
+  reasoning: 5,
+  'reasoning-error': 5,
+  grounding: 6,
 }
 
 function stageRank(id: string): number {
-  return STAGE_RANK[id] ?? 6
+  if (id.startsWith('run-')) return 4
+  return STAGE_RANK[id] ?? 7
+}
+
+const RUN_STAGE_AGENT: Record<string, StreamEntry['agent']> = {
+  scope: 'Scope',
+  collect: 'Collector',
+  conclude: 'Reasoning',
+  ground: 'Grounding',
 }
 
 function Investigation({ evidenceId }: { evidenceId: number }) {
   const { token } = useAuth()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [steerNotices, setSteerNotices] = useState<StreamEntry[]>([])
-  // Capture-once timestamps per pipeline stage. Query `dataUpdatedAt` moves
-  // forward on every background refetch, which would re-stamp evidence
-  // entries after the conclusion — the provenance trail must record when a
-  // stage first delivered, not when its data was last revalidated.
-  const stageAt = useRef<{ scope?: number; collect?: number; conclude?: number }>({})
+  const [directives, setDirectives] = useState<string[]>([])
+  const [live, setLive] = useState<InvestigationRun | null>(null)
+  const [streamStages, setStreamStages] = useState<StageEvent[]>([])
+  const [streaming, setStreaming] = useState(false)
+  const [runError, setRunError] = useState<string | null>(null)
+  // Capture-once timestamps for the evidence-context entries: query
+  // `dataUpdatedAt` moves forward on refetches, which must not re-stamp
+  // the trail. (Run stages carry server timestamps and need no such care.)
+  const stageAt = useRef<{ scope?: number; collect?: number }>({})
+  const errorAt = useRef(0)
 
   const detail = useAuthedQuery(['evidence', 'detail', evidenceId], (t) =>
     api.getEvidenceDetail(t, evidenceId),
@@ -88,6 +103,9 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
     api.getSimilarEvidence(t, evidenceId),
   )
   const providers = useAuthedQuery(['reasoning-providers'], (t) => api.getReasoningProviders(t))
+  const history = useAuthedQuery(['investigations', evidenceId], (t) =>
+    api.listInvestigations(t, evidenceId),
+  )
   const windowEvents = useAuthedQuery(
     ['evidence', 'window-events', evidenceId, detail.data?.window_start],
     (t) =>
@@ -99,19 +117,48 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
       }),
   )
 
-  const investigation = useMutation({
-    mutationFn: () => api.investigateEvidence(token!, evidenceId),
-    onSuccess: () => {
-      stageAt.current.conclude = Date.now()
-    },
-    onError: () => {
-      stageAt.current.conclude = Date.now()
-    },
-  })
-
   // Set-once (??=): the first successful fetch stamps the stage; refetches don't.
   if (detail.data) stageAt.current.scope ??= detail.dataUpdatedAt
   if (similar.data) stageAt.current.collect ??= similar.dataUpdatedAt
+
+  // Displayed run: the live one, else the latest persisted complete run —
+  // investigations survive a page refresh.
+  const run = live ?? history.data?.find((r) => r.status === 'complete') ?? null
+  const runStages = useMemo(
+    () => (streaming ? streamStages : (run?.stages ?? [])),
+    [streaming, streamStages, run],
+  )
+  const parsed = run?.narrative ? parseNarrative(run.narrative) : null
+
+  async function runInvestigation() {
+    if (!token || streaming) return
+    setStreaming(true)
+    setRunError(null)
+    setLive(null)
+    setStreamStages([])
+    try {
+      await api.investigateStream(token, evidenceId, directives, (event) => {
+        if (event.type === 'stage') {
+          setStreamStages((prev) => [...prev, event])
+        } else if (event.type === 'complete') {
+          setLive(event.investigation)
+          queryClient.invalidateQueries({ queryKey: ['investigations', evidenceId] })
+        } else {
+          errorAt.current = Date.now()
+          setRunError(
+            event.status_code === 503
+              ? 'Reasoning provider unreachable. Check that Ollama is running, then run again.'
+              : `The reasoning provider returned an error: ${event.detail}. Run again.`,
+          )
+        }
+      })
+    } catch {
+      errorAt.current = Date.now()
+      setRunError("Couldn't reach ARGUS. Check your connection and run again.")
+    } finally {
+      setStreaming(false)
+    }
+  }
 
   const openCase = useMutation({
     mutationFn: () => {
@@ -123,8 +170,6 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
     },
     onSuccess: (c) => navigate(`/cases/${c.id}`),
   })
-
-  const parsed = investigation.data ? parseNarrative(investigation.data.narrative) : null
 
   const entries = useMemo(() => {
     const out: StreamEntry[] = []
@@ -210,16 +255,35 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
         ),
       })
     }
-    if (investigation.data && parsed) {
-      const r = investigation.data
+
+    // The run's own provenance trail: server-stamped stage events, live or
+    // replayed from the persisted record.
+    for (const [i, s] of runStages.entries()) {
+      out.push({
+        id: `run-${s.stage}-${i}`,
+        time: Date.parse(s.at),
+        agent: RUN_STAGE_AGENT[s.stage] ?? 'Planner',
+        body: (
+          <p className="text-[11px] leading-4 text-tertiary">
+            ▸ {s.stage}: <span className="text-secondary">{s.detail}</span>
+          </p>
+        ),
+      })
+    }
+
+    if (run?.status === 'complete' && parsed && run.narrative) {
+      const at = run.finished_at ? Date.parse(run.finished_at) : Date.now()
       out.push({
         id: 'reasoning',
-        time: stageAt.current.conclude!,
+        time: at,
         agent: 'Reasoning',
         body: (
           <div className="space-y-3">
             <p className="text-[11px] leading-4 text-tertiary">
-              {r.model} via {r.provider} · reasoning over curated evidence only
+              {run.model} via {run.provider} ·{' '}
+              {run.duration_ms !== null && `${(run.duration_ms / 1000).toFixed(1)}s · `}
+              {run.directives.length > 0 && `${run.directives.length} directive(s) applied · `}
+              reasoning over curated evidence only
             </p>
             {parsed.sections.map((s) => (
               <div key={s.title} className="rounded-control border-[0.5px] border-subtle bg-base p-3">
@@ -236,9 +300,9 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
       })
       out.push({
         id: 'grounding',
-        time: stageAt.current.conclude!,
+        time: at,
         agent: 'Grounding',
-        body: r.grounded ? (
+        body: run.grounded ? (
           <p className="text-label text-secondary">
             Narrative grounded — artifacts match the evidence and MITRE claims match the
             ATT&CK catalog.
@@ -249,7 +313,7 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
               The narrative makes claims the evidence doesn't support:
             </p>
             <ul className="list-disc space-y-0.5 pl-5">
-              {r.unsupported_terms.map((term) => (
+              {run.unsupported_terms.map((term) => (
                 <li key={term} className="font-mono text-data text-sev-critical">
                   {term}
                 </li>
@@ -259,25 +323,21 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
         ),
       })
     }
-    if (investigation.error) {
-      const err = investigation.error
-      const message =
-        err instanceof ApiError && err.status === 503
-          ? 'Reasoning provider unreachable. Check that Ollama is running, then run again.'
-          : `The reasoning provider returned an error: ${err.message}. Run the investigation again.`
+    if (runError) {
       out.push({
         id: 'reasoning-error',
-        time: stageAt.current.conclude!,
+        time: errorAt.current,
         agent: 'Reasoning',
-        body: <p className="text-label text-sev-critical">{message}</p>,
+        body: <p className="text-label text-sev-critical">{runError}</p>,
       })
     }
     // Causal pipeline order, not clock order: parallel fetches may land in
     // any sequence, but the trail must always read evidence → conclusion.
     const all = [...out, ...steerNotices]
     return all.sort((a, b) => stageRank(a.id) - stageRank(b.id) || a.time - b.time)
-  }, [detail.data, similar.data, investigation.data, investigation.error, parsed, steerNotices])
+  }, [detail.data, similar.data, run, runStages, parsed, runError, steerNotices])
 
+  const lastStreamDetail = streamStages.at(-1)?.detail
   const steps: PipelineStep[] = [
     {
       label: 'Scope',
@@ -299,16 +359,17 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
     },
     {
       label: 'Conclude',
-      detail: investigation.isPending
-        ? 'reasoning in progress…'
-        : investigation.data
-          ? `${investigation.data.model} · ${investigation.data.grounded ? 'grounded' : 'ungrounded'}`
+      detail: streaming
+        ? (lastStreamDetail ?? 'reasoning in progress…')
+        : run?.status === 'complete'
+          ? `${run.model} · ${run.grounded ? 'grounded' : 'ungrounded'}`
           : 'run the investigation',
-      state: investigation.isPending ? 'active' : investigation.data ? 'done' : 'pending',
+      state: streaming ? 'active' : run?.status === 'complete' ? 'done' : 'pending',
     },
   ]
 
   function steer(message: string) {
+    setDirectives((prev) => [...prev, message])
     setSteerNotices((prev) => [
       ...prev,
       {
@@ -319,8 +380,8 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
           <div className="space-y-1">
             <p className="text-label text-primary">“{message}”</p>
             <p className="text-[11px] leading-4 text-tertiary">
-              Steering isn't wired to the agent pipeline yet — it arrives with Phase 3. The
-              directive was noted in this session only.
+              Directive recorded — it steers the prompt of the next run
+              {streaming ? ' (this run already started without it)' : ''}.
             </p>
           </div>
         ),
@@ -350,23 +411,51 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
             </p>
           )}
           <PipelineSteps steps={steps} />
-          <button
-            type="button"
-            onClick={() => investigation.mutate()}
-            disabled={investigation.isPending || !detail.data}
-            className={`flex w-full items-center justify-center gap-2 rounded-control px-3 py-2 text-label font-medium transition-colors duration-120 disabled:opacity-60 ${
-              investigation.data
-                ? 'border-[0.5px] border-subtle text-secondary hover:bg-hover hover:text-primary'
-                : 'bg-accent text-(--bg-base) hover:bg-accent-dim'
-            }`}
-          >
-            <Sparkles size={13} strokeWidth={1.5} />
-            {investigation.isPending
-              ? 'Investigating…'
-              : investigation.data
-                ? 'Run again'
-                : 'Run investigation'}
-          </button>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => void runInvestigation()}
+              disabled={streaming || !detail.data}
+              className={`flex w-full items-center justify-center gap-2 rounded-control px-3 py-2 text-label font-medium transition-colors duration-120 disabled:opacity-60 ${
+                run
+                  ? 'border-[0.5px] border-subtle text-secondary hover:bg-hover hover:text-primary'
+                  : 'bg-accent text-(--bg-base) hover:bg-accent-dim'
+              }`}
+            >
+              <Sparkles size={13} strokeWidth={1.5} />
+              {streaming ? 'Investigating…' : run ? 'Run again' : 'Run investigation'}
+            </button>
+            {run && !live && !streaming && run.finished_at && (
+              <p className="text-center text-[11px] leading-4 text-tertiary">
+                showing last run · {relativeAge(run.finished_at)} ago
+              </p>
+            )}
+            {directives.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-tertiary">
+                  Directives for next run
+                </div>
+                {directives.map((d, i) => (
+                  <div
+                    key={`${i}-${d}`}
+                    className="flex items-start justify-between gap-1.5 rounded-control bg-base px-2 py-1"
+                  >
+                    <span className="min-w-0 break-words text-[11px] leading-4 text-secondary">
+                      {d}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Remove directive"
+                      onClick={() => setDirectives((prev) => prev.filter((_, j) => j !== i))}
+                      className="text-tertiary transition-colors duration-120 hover:text-primary"
+                    >
+                      <X size={11} strokeWidth={1.5} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {providers.data && (
             <p className="text-center text-[11px] leading-4 text-tertiary">
               provider: {providers.data.default}
@@ -380,7 +469,7 @@ function Investigation({ evidenceId }: { evidenceId: number }) {
         <ReasoningStream
           entries={entries}
           thinking={
-            investigation.isPending
+            streaming
               ? 'ARGUS is reasoning over the evidence — watching…'
               : detail.isLoading
                 ? 'Scoping the investigation…'

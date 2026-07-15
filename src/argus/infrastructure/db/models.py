@@ -21,6 +21,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Identity,
+    Integer,
     SmallInteger,
     Text,
     UniqueConstraint,
@@ -351,6 +352,39 @@ class CaseNote(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
+
+
+class Investigation(Base):
+    """One reasoning run over an evidence object: the provenance trail
+    (stages with timestamps), analyst directives, the narrative and its
+    grounding verdict. Persisted so investigations are auditable and
+    survive a page refresh. Tenant-owned -> RLS."""
+
+    __tablename__ = "investigations"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    evidence_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("evidence_objects.id", ondelete="CASCADE")
+    )
+    status: Mapped[str] = mapped_column(Text, server_default=text("'running'"))
+    provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
+    grounded: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    unsupported_terms: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    directives: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    stages: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Connector(Base):

@@ -163,16 +163,37 @@ export interface SimilarEntry {
   similarity: number
 }
 
-export interface InvestigationResult {
-  evidence_id: number
-  narrative: string
-  provider: string
-  model: string
-  techniques: { id: string; name: string | null }[]
-  similar_count: number
-  grounded: boolean
-  unsupported_terms: string[]
+export interface StageEvent {
+  stage: string
+  detail: string
+  at: string
 }
+
+export interface InvestigationRun {
+  investigation_id: number
+  evidence_id: number
+  status: 'running' | 'complete' | 'failed'
+  provider: string | null
+  model: string | null
+  narrative: string | null
+  grounded: boolean | null
+  unsupported_terms: string[]
+  directives: string[]
+  stages: StageEvent[]
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+}
+
+export type InvestigateStreamEvent =
+  | ({ type: 'stage' } & StageEvent)
+  | {
+      type: 'complete'
+      investigation: InvestigationRun
+      techniques: unknown[]
+      similar_count: number
+    }
+  | { type: 'error'; status_code: number; detail: string }
 
 export function getEvidenceDetail(token: string, id: number) {
   const { init } = authed(token)
@@ -192,12 +213,39 @@ export function getReasoningProviders(token: string) {
   return request<{ providers: string[]; default: string }>('/evidence/reasoning/providers', init)
 }
 
-export function investigateEvidence(token: string, id: number, provider?: string) {
-  const { suffix, init } = authed(token, { provider })
-  return request<InvestigationResult>(`/evidence/${id}/investigate${suffix}`, {
-    ...init,
+export function listInvestigations(token: string, evidenceId: number) {
+  const { init } = authed(token)
+  return request<InvestigationRun[]>(`/evidence/${evidenceId}/investigations`, init)
+}
+
+// SSE over fetch (EventSource can't POST or carry the bearer token).
+export async function investigateStream(
+  token: string,
+  evidenceId: number,
+  directives: string[],
+  onEvent: (event: InvestigateStreamEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/evidence/${evidenceId}/investigate/stream`, {
     method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ directives }),
   })
+  if (!res.ok || !res.body) throw new ApiError(res.status, res.statusText)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) >= 0) {
+      const chunk = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const data = chunk.split('\n').find((l) => l.startsWith('data: '))
+      if (data) onEvent(JSON.parse(data.slice(6)) as InvestigateStreamEvent)
+    }
+  }
 }
 
 export type CaseStatus = 'new' | 'investigating' | 'contained' | 'resolved' | 'closed'

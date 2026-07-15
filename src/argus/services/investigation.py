@@ -13,15 +13,19 @@ The deterministic step owns data assembly; the LLM only interprets. This
 is what makes conclusions reproducible and traceable.
 """
 
+import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from argus.domain.reasoning import ReasoningRequest
-from argus.infrastructure.db.models import Entity, EvidenceObject, MitreTechnique
+from argus.infrastructure.db.models import Entity, EvidenceObject, Investigation, MitreTechnique
+from argus.infrastructure.db.session import tenant_session
 from argus.services.cti import lookup_cti
 from argus.services.grounding import check_grounding, check_mitre_claims, extract_technique_ids
 from argus.services.rag import find_similar
@@ -134,7 +138,7 @@ async def _assemble_context(
     )
 
 
-def _render_prompt(ctx: InvestigationContext) -> str:
+def _render_prompt(ctx: InvestigationContext, directives: list[str] | None = None) -> str:
     lines = [
         "=== EVIDENCE OBJECT ===",
         ctx.summary,
@@ -180,69 +184,184 @@ def _render_prompt(ctx: InvestigationContext) -> str:
                 f"- host {sdict['host']}, score {sdict['score']}, "
                 f"techniques {sdict['techniques']}, similarity {sdict['similarity']}"
             )
+    if directives:
+        lines.append("")
+        lines.append("=== ANALYST DIRECTIVES (steer the assessment; evidence rules still apply) ===")
+        for d in directives:
+            lines.append(f"- {d}")
     lines.append("")
     lines.append(_INSTRUCTIONS)
     return "\n".join(lines)
 
 
-@dataclass
-class InvestigationResult:
-    evidence_id: int
-    narrative: str
-    provider: str
-    model: str
-    context: InvestigationContext
-    grounded: bool = True
-    unsupported_terms: list = field(default_factory=list)
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-async def investigate_evidence(
-    session: AsyncSession,
+def serialize_investigation(run: Investigation) -> dict[str, Any]:
+    return {
+        "investigation_id": run.id,
+        "evidence_id": run.evidence_id,
+        "status": run.status,
+        "provider": run.provider,
+        "model": run.model,
+        "narrative": run.narrative,
+        "grounded": run.grounded,
+        "unsupported_terms": run.unsupported_terms or [],
+        "directives": run.directives or [],
+        "stages": run.stages or [],
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "duration_ms": run.duration_ms,
+    }
+
+
+async def run_investigation(
     tenant_id: uuid.UUID,
     evidence_id: int,
     provider_name: str | None = None,
-) -> InvestigationResult | None:
-    obj = await session.get(EvidenceObject, evidence_id)
-    if obj is None:
-        return None
+    directives: list[str] | None = None,
+    created_by: uuid.UUID | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """The staged reasoning pipeline. Yields SSE-ready events:
 
-    ctx = await _assemble_context(session, tenant_id, obj)
-    provider = get_reasoning_provider(provider_name)
-    if provider is None:
-        raise RuntimeError(f"reasoning provider '{provider_name}' unavailable")
+      {"type": "stage", "stage": ..., "detail": ..., "at": iso}
+      {"type": "complete", "investigation": {...}, "techniques": [...],
+       "similar_count": n}
+      {"type": "error", "status_code": ..., "detail": ...}
 
-    req = ReasoningRequest(system=_SYSTEM, prompt=_render_prompt(ctx))
-    resp = await provider.complete(req)
+    Every stage is persisted to the investigations row as it happens, so
+    the provenance trail survives crashes and page refreshes. Sessions
+    are opened per stage — never held across the (slow) provider call.
+    """
+    directives = [d.strip() for d in (directives or []) if d.strip()]
+    stages: list[dict[str, str]] = []
+    started = time.monotonic()
 
-    # Artifact grounding: names must come from the evidence entity set.
-    allowed_keys = {e["key"] for e in ctx.entities}
-    grounding = check_grounding(resp.text, allowed_keys)
+    def stage(name: str, detail: str) -> dict[str, Any]:
+        entry = {"stage": name, "detail": detail, "at": _now_iso()}
+        stages.append(entry)
+        return {"type": "stage", **entry}
 
-    # MITRE grounding: claims must match the loaded ATT&CK catalog (the
-    # same source of truth the prompt was built from) and this evidence's
-    # own technique mapping.
-    catalog, known_tactics = await _mitre_ground_truth(
-        session, extract_technique_ids(resp.text)
-    )
-    mitre_violations = check_mitre_claims(
-        resp.text,
-        set(obj.technique_ids or []),
-        catalog,
-        known_tactics,
-    )
+    # -- scope ------------------------------------------------------------
+    async with tenant_session(tenant_id) as s:
+        obj = await s.get(EvidenceObject, evidence_id)
+        if obj is None:
+            yield {"type": "error", "status_code": 404, "detail": "Evidence object not found"}
+            return
+        run = Investigation(
+            tenant_id=tenant_id,
+            evidence_id=evidence_id,
+            directives=directives,
+            created_by=created_by,
+        )
+        s.add(run)
+        await s.flush()
+        run_id = run.id
+        evidence_technique_ids = set(obj.technique_ids or [])
+        scope_detail = (
+            f"evidence #{obj.id} on {obj.host_name or 'unknown host'} · "
+            f"{obj.event_count} events · score {obj.score}"
+        )
+    yield stage("scope", scope_detail)
 
-    unsupported = [
-        f"artifact not in evidence: {t}" for t in grounding["unsupported_terms"]
-    ] + mitre_violations
-    return InvestigationResult(
-        evidence_id=evidence_id,
-        narrative=resp.text,
-        provider=resp.provider,
-        model=resp.model,
-        context=ctx,
-        grounded=len(unsupported) == 0,
-        unsupported_terms=unsupported,
-    )
+    async def _persist(**fields: Any) -> None:
+        async with tenant_session(tenant_id) as s:
+            row = await s.get(Investigation, run_id)
+            row.stages = list(stages)
+            for k, v in fields.items():
+                setattr(row, k, v)
+
+    try:
+        # -- collect --------------------------------------------------------
+        async with tenant_session(tenant_id) as s:
+            obj = await s.get(EvidenceObject, evidence_id)
+            ctx = await _assemble_context(s, tenant_id, obj)
+        yield stage(
+            "collect",
+            f"{len(ctx.entities)} entities · {len(ctx.similar)} similar past evidence · "
+            f"{len(ctx.cti)} CTI findings",
+        )
+        await _persist()
+
+        # -- conclude (LLM; no session held) ---------------------------------
+        provider = get_reasoning_provider(provider_name)
+        if provider is None:
+            raise RuntimeError(f"reasoning provider '{provider_name}' unavailable")
+        req = ReasoningRequest(system=_SYSTEM, prompt=_render_prompt(ctx, directives))
+        llm_started = time.monotonic()
+        resp = await provider.complete(req)
+        yield stage(
+            "conclude",
+            f"{resp.model} via {resp.provider} · {time.monotonic() - llm_started:.1f}s",
+        )
+        await _persist(provider=resp.provider, model=resp.model)
+
+        # -- ground -----------------------------------------------------------
+        allowed_keys = {e["key"] for e in ctx.entities}
+        grounding = check_grounding(resp.text, allowed_keys)
+        async with tenant_session(tenant_id) as s:
+            catalog, known_tactics = await _mitre_ground_truth(
+                s, extract_technique_ids(resp.text)
+            )
+        mitre_violations = check_mitre_claims(
+            resp.text, evidence_technique_ids, catalog, known_tactics
+        )
+        unsupported = [
+            f"artifact not in evidence: {t}" for t in grounding["unsupported_terms"]
+        ] + mitre_violations
+        grounded = len(unsupported) == 0
+        yield stage(
+            "ground",
+            "narrative grounded"
+            if grounded
+            else f"{len(unsupported)} unsupported claims detected",
+        )
+
+        # -- finalize ---------------------------------------------------------
+        duration_ms = int((time.monotonic() - started) * 1000)
+        async with tenant_session(tenant_id) as s:
+            row = await s.get(Investigation, run_id)
+            row.status = "complete"
+            row.narrative = resp.text
+            row.grounded = grounded
+            row.unsupported_terms = unsupported
+            row.stages = list(stages)
+            row.provider = resp.provider
+            row.model = resp.model
+            row.finished_at = datetime.now(UTC)
+            row.duration_ms = duration_ms
+            await s.flush()
+            payload = serialize_investigation(row)
+        yield {
+            "type": "complete",
+            "investigation": payload,
+            "techniques": [{"id": t["id"], "name": t["name"]} for t in ctx.techniques],
+            "similar_count": len(ctx.similar),
+        }
+    except RuntimeError as e:
+        await _persist(status="failed", finished_at=datetime.now(UTC))
+        yield {"type": "error", "status_code": 503, "detail": str(e)}
+    except Exception as e:  # noqa: BLE001 - provider/network errors surface as 502
+        await _persist(status="failed", finished_at=datetime.now(UTC))
+        yield {"type": "error", "status_code": 502, "detail": f"reasoning provider error: {str(e)[:200]}"}
+
+
+async def run_to_completion(
+    tenant_id: uuid.UUID,
+    evidence_id: int,
+    provider_name: str | None = None,
+    directives: list[str] | None = None,
+    created_by: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    """Drive the pipeline and return the final complete/error event."""
+    final: dict[str, Any] = {"type": "error", "status_code": 500, "detail": "no result"}
+    async for event in run_investigation(
+        tenant_id, evidence_id, provider_name, directives, created_by
+    ):
+        if event["type"] in ("complete", "error"):
+            final = event
+    return final
 
 
 async def _mitre_ground_truth(

@@ -1,6 +1,8 @@
 """Reasoning agent flow with a FAKE provider (no Ollama needed in CI):
 evidence -> curated context -> narrative, tenant-scoped."""
 
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
@@ -102,3 +104,84 @@ async def test_investigate_tenant_scoped(client):
     ev = (await client.get("/api/v1/evidence", headers=auth_a)).json()["items"][0]
     r = await client.post(f"/api/v1/evidence/{ev['id']}/investigate", headers=auth_b)
     assert r.status_code == 404  # RLS: not yours
+
+
+async def test_investigation_persisted_with_stage_trail(client):
+    auth = await _auth(client, "inv-hist")
+    await client.post("/api/v1/events", json={"source": "securitydatasets",
+        "events": [_lsass(30), _lsass(31)]}, headers=auth)
+    await client.post("/api/v1/evidence/correlate", headers=auth)
+    ev = (await client.get("/api/v1/evidence", headers=auth)).json()["items"][0]
+
+    r = await client.post(f"/api/v1/evidence/{ev['id']}/investigate", headers=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["investigation_id"] > 0
+    assert [s["stage"] for s in body["stages"]] == ["scope", "collect", "conclude", "ground"]
+
+    # the run survives as an auditable record
+    r = await client.get(f"/api/v1/evidence/{ev['id']}/investigations", headers=auth)
+    runs = r.json()
+    assert len(runs) == 1
+    assert runs[0]["status"] == "complete"
+    assert runs[0]["narrative"] == body["narrative"]
+    assert runs[0]["grounded"] is False  # fake provider fabricates mimikatz
+    assert runs[0]["duration_ms"] is not None
+
+
+async def test_directives_steer_the_prompt(client, monkeypatch):
+    captured = {}
+
+    class CapturingProvider:
+        name = "fake"
+
+        async def complete(self, req):
+            captured["prompt"] = req.prompt
+            return ReasoningResponse(text="SUMMARY: nothing notable.", provider="fake",
+                                     model="fake-1")
+
+    monkeypatch.setattr(
+        investigation_service, "get_reasoning_provider", lambda name=None: CapturingProvider()
+    )
+    auth = await _auth(client, "inv-steer")
+    await client.post("/api/v1/events", json={"source": "securitydatasets",
+        "events": [_lsass(40)]}, headers=auth)
+    await client.post("/api/v1/evidence/correlate", headers=auth)
+    ev = (await client.get("/api/v1/evidence", headers=auth)).json()["items"][0]
+
+    r = await client.post(
+        f"/api/v1/evidence/{ev['id']}/investigate",
+        json={"directives": ["focus on lateral movement", "rule out backup jobs"]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert "ANALYST DIRECTIVES" in captured["prompt"]
+    assert "focus on lateral movement" in captured["prompt"]
+    assert r.json()["directives"] == ["focus on lateral movement", "rule out backup jobs"]
+
+
+async def test_investigate_stream_emits_staged_events(client):
+    auth = await _auth(client, "inv-sse")
+    await client.post("/api/v1/events", json={"source": "securitydatasets",
+        "events": [_lsass(50)]}, headers=auth)
+    await client.post("/api/v1/evidence/correlate", headers=auth)
+    ev = (await client.get("/api/v1/evidence", headers=auth)).json()["items"][0]
+
+    events = []
+    async with client.stream(
+        "POST", f"/api/v1/evidence/{ev['id']}/investigate/stream", headers=auth
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        async for line in r.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+    kinds = [(e["type"], e.get("stage")) for e in events]
+    assert kinds[:4] == [("stage", "scope"), ("stage", "collect"),
+                         ("stage", "conclude"), ("stage", "ground")]
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["investigation"]["status"] == "complete"
+    # stage timestamps are the provenance trail: causally ordered
+    ats = [e["at"] for e in events if e["type"] == "stage"]
+    assert ats == sorted(ats)
