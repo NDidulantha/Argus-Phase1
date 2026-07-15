@@ -2,8 +2,8 @@
 drill into one, run + replay persisted investigations."""
 
 import json
-from datetime import datetime
-from typing import Annotated, Any
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -84,10 +84,15 @@ async def correlate(
 async def list_evidence(
     current: Annotated[CurrentUser, Depends(get_current_user)],
     min_score: Annotated[int, Query(ge=0, le=100)] = 0,
+    status: Annotated[
+        str | None, Query(pattern=r"^(open|acknowledged|dismissed|escalated)$")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> EvidenceListOut:
     async with tenant_session(current.tenant_id) as s:
         filt = [EvidenceObject.score >= min_score]
+        if status is not None:
+            filt.append(EvidenceObject.status == status)
         total = await s.scalar(select(func.count(EvidenceObject.id)).where(*filt)) or 0
         rows = (
             await s.scalars(
@@ -99,6 +104,29 @@ async def list_evidence(
         ).all()
         items = [EvidenceOut.model_validate(r) for r in rows]
     return EvidenceListOut(items=items, total=total)
+
+
+class EvidenceStatusIn(BaseModel):
+    status: Literal["open", "acknowledged", "dismissed", "escalated"]
+
+
+@router.patch("/{evidence_id}", response_model=EvidenceOut)
+async def set_evidence_status(
+    evidence_id: int,
+    body: EvidenceStatusIn,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> EvidenceOut:
+    """Triage an alert. Non-open objects survive correlation reruns, and
+    their host/window is not resurrected as a fresh open alert."""
+    async with tenant_session(current.tenant_id) as s:
+        obj = await s.get(EvidenceObject, evidence_id)
+        if obj is None:
+            raise HTTPException(404, "Evidence object not found")
+        obj.status = body.status
+        obj.updated_at = datetime.now(UTC)
+        await s.flush()
+        out = EvidenceOut.model_validate(obj)
+    return out
 
 
 @router.get("/{evidence_id}", response_model=EvidenceDetailOut)

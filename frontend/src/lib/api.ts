@@ -68,6 +68,8 @@ export async function changePassword(
   }
 }
 
+export type EvidenceStatus = 'open' | 'acknowledged' | 'dismissed' | 'escalated'
+
 export interface EvidenceItem {
   id: number
   host_name: string | null
@@ -77,7 +79,7 @@ export interface EvidenceItem {
   technique_ids: string[]
   tactics: string[]
   score: number
-  status: string
+  status: EvidenceStatus
 }
 
 export interface EvidenceList {
@@ -113,9 +115,20 @@ function authed(token: string, params?: Record<string, string | number | undefin
   return { suffix, init: { headers: { Authorization: `Bearer ${token}` } } }
 }
 
-export function listEvidence(token: string, params?: { min_score?: number; limit?: number }) {
+export function listEvidence(
+  token: string,
+  params?: { min_score?: number; status?: EvidenceStatus; limit?: number },
+) {
   const { suffix, init } = authed(token, params)
   return request<EvidenceList>(`/evidence${suffix}`, init)
+}
+
+export function setEvidenceStatus(token: string, id: number, status: EvidenceStatus) {
+  return request<EvidenceItem>(`/evidence/${id}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
 }
 
 export function listEvents(

@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from argus.api.deps import CurrentUser, get_current_user
 from argus.infrastructure.db.models import EventAggregate, NormalizedEvent, RawEvent
 from argus.infrastructure.db.session import tenant_session
+from argus.services.auto_correlation import schedule_correlation
 from argus.services.enrichment import lookup_indicator
 from argus.services.indicators import extract_indicators
 from argus.services.ingestion import ingest_events
@@ -74,6 +75,8 @@ async def ingest(
     # tenant_id comes from the TOKEN, never from the request body.
     async with tenant_session(current.tenant_id) as session:
         result = await ingest_events(session, current.tenant_id, body.source, body.events)
+    if result.normalized:
+        schedule_correlation(current.tenant_id)
     return EventsOut(
         received=result.received, normalized=result.normalized, failed=result.failed
     )

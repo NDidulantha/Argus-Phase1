@@ -6,9 +6,11 @@ techniques / tactics / entities involved, and computes an EXPLAINABLE
 score. No LLM here — the evidence object is the trustworthy input the
 reasoning agent will later consume.
 
-Correlation runs on demand (POST /evidence/correlate) rather than per
-event: clustering needs a batch of events to be meaningful, and rerunning
-is cheap and idempotent (open objects for a host+window are replaced).
+Correlation runs debounced after ingest (services/auto_correlation.py) and
+on demand (POST /evidence/correlate) rather than per event: clustering
+needs a batch of events to be meaningful, and rerunning is cheap and
+idempotent (open objects are replaced; triaged ones are left alone and
+their clusters are not resurrected).
 
 Scoring model (fully transparent, see score_breakdown on each object):
   base            = max technique confidence contribution
@@ -131,8 +133,28 @@ async def correlate_tenant(
         delete(EvidenceObject).where(EvidenceObject.status == "open")
     )
 
+    # Triaged (non-open) objects survive the rerun — and their clusters must
+    # not come back as fresh open alerts, or dismissing would be pointless.
+    triaged = (
+        await session.execute(
+            select(
+                EvidenceObject.host_name,
+                EvidenceObject.window_start,
+                EvidenceObject.window_end,
+            ).where(EvidenceObject.status != "open")
+        )
+    ).all()
+
+    def _already_triaged(host, start, end) -> bool:
+        return any(
+            t.host_name == host and start <= t.window_end and end >= t.window_start
+            for t in triaged
+        )
+
     written = 0
     for c in clusters:
+        if _already_triaged(c["host"], c["start"], c["last_time"]):
+            continue
         techniques = sorted(c["techs"])
         tactics = sorted({t for tid in techniques for t in tactic_map.get(tid, [])})
         max_conf = max(c["techs"].values()) if c["techs"] else 0

@@ -186,7 +186,9 @@ def _render_prompt(ctx: InvestigationContext, directives: list[str] | None = Non
             )
     if directives:
         lines.append("")
-        lines.append("=== ANALYST DIRECTIVES (steer the assessment; evidence rules still apply) ===")
+        lines.append(
+            "=== ANALYST DIRECTIVES (steer the assessment; evidence rules still apply) ==="
+        )
         for d in directives:
             lines.append(f"- {d}")
     lines.append("")
@@ -344,7 +346,11 @@ async def run_investigation(
         yield {"type": "error", "status_code": 503, "detail": str(e)}
     except Exception as e:  # noqa: BLE001 - provider/network errors surface as 502
         await _persist(status="failed", finished_at=datetime.now(UTC))
-        yield {"type": "error", "status_code": 502, "detail": f"reasoning provider error: {str(e)[:200]}"}
+        yield {
+            "type": "error",
+            "status_code": 502,
+            "detail": f"reasoning provider error: {str(e)[:200]}",
+        }
 
 
 async def run_to_completion(

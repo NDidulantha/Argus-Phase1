@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # Embeddings for RAG over evidence objects.
     embedding_provider: str = "hashing-v1"
 
+    # Auto-correlation after ingest: debounced per tenant so a burst of
+    # ingest calls triggers one correlation pass once the tenant goes quiet.
+    auto_correlate_enabled: bool = True
+    auto_correlate_debounce_seconds: float = 10.0
+    auto_correlate_window_minutes: int = 30
+
     # Reasoning (LLM). Ollama is the local, private, free default; Anthropic
     # is an optional drop-in used only when an API key is configured.
     reasoning_provider: str = "ollama"
