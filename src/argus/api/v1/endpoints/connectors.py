@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from argus.api.deps import CurrentUser, get_current_user
+from argus.core.crypto import decrypt_credentials, encrypt_credentials
 from argus.infrastructure.db.models import Connector
 from argus.infrastructure.db.session import tenant_session
 
@@ -206,7 +207,7 @@ async def create_connector(
             vendor=body.vendor,
             name=body.name,
             endpoint_url=body.endpoint_url,
-            credentials=body.credentials,
+            credentials=encrypt_credentials(body.credentials),
             verify_tls=body.verify_tls,
             field_mapping=body.field_mapping or default_mapping,
         )
@@ -233,7 +234,7 @@ async def test_connector(
         ok, detail = await probe_connector(
             connector.vendor,
             connector.endpoint_url,
-            connector.credentials,
+            decrypt_credentials(connector.credentials),
             connector.verify_tls,
         )
         connector.status = "healthy" if ok else "error"
@@ -255,6 +256,8 @@ async def update_connector(
         for field in ("name", "endpoint_url", "credentials", "verify_tls", "field_mapping"):
             value = getattr(body, field)
             if value is not None:
+                if field == "credentials":
+                    value = encrypt_credentials(value)
                 setattr(connector, field, value)
         connector.updated_at = datetime.now(UTC)
         await s.flush()

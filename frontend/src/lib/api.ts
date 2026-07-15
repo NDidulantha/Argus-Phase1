@@ -35,11 +35,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export function login(tenantSlug: string, email: string, password: string) {
+export function login(tenantSlug: string, email: string, password: string, otpCode?: string) {
   return request<TokenResponse>('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tenant_slug: tenantSlug, email, password }),
+    body: JSON.stringify({
+      tenant_slug: tenantSlug,
+      email,
+      password,
+      ...(otpCode ? { otp_code: otpCode } : {}),
+    }),
   })
 }
 
@@ -596,4 +601,64 @@ export function adminUpdateUser(
     `/admin/tenants/${tenantId}/users/${userId}`,
     adminInit(key, 'PATCH', patch),
   )
+}
+
+// ---- MFA + self-service ingest tokens ----
+
+export interface MfaStatus {
+  enabled: boolean
+  pending: boolean
+}
+
+export interface MfaEnrolment {
+  secret: string
+  otpauth_uri: string
+}
+
+export function getMfaStatus(token: string) {
+  return request<MfaStatus>('/auth/mfa', { headers: { Authorization: `Bearer ${token}` } })
+}
+
+export function enrolMfa(token: string) {
+  return request<MfaEnrolment>('/auth/mfa/enrol', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+async function postMfaCode(token: string, path: string, code: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((b: { detail?: string }) => b.detail)
+      .catch(() => undefined)
+    throw new ApiError(res.status, detail ?? res.statusText)
+  }
+}
+
+export function activateMfa(token: string, code: string) {
+  return postMfaCode(token, '/auth/mfa/activate', code)
+}
+
+export function disableMfa(token: string, code: string) {
+  return postMfaCode(token, '/auth/mfa/disable', code)
+}
+
+export interface IngestToken {
+  token: string
+  expires_days: number
+  role: string
+}
+
+export function mintIngestToken(token: string, days: number) {
+  return request<IngestToken>('/auth/ingest-token', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days }),
+  })
 }

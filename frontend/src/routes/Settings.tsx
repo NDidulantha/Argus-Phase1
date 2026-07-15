@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Copy, ShieldCheck } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/api'
 import { ApiError } from '../lib/api'
@@ -32,30 +33,9 @@ export function Settings() {
 
       <PasswordSection />
 
-      <section className="rounded-card border-[0.5px] border-subtle bg-elevated p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-card-title">Multi-factor authentication</h2>
-          <span className="rounded-full border-[0.5px] border-strong px-2 py-0.5 text-[11px] leading-4 text-tertiary">
-            planned
-          </span>
-        </div>
-        <p className="mt-1.5 text-label text-secondary">
-          TOTP-based MFA is on the Phase-2 security roadmap.
-        </p>
-      </section>
+      <MfaSection />
 
-      <section className="rounded-card border-[0.5px] border-subtle bg-elevated p-5">
-        <h2 className="text-card-title">API keys</h2>
-        <p className="mt-1.5 text-label text-secondary">
-          Long-lived ingest tokens (for collectors) are minted server-side today:
-        </p>
-        <pre className="mt-2 overflow-x-auto rounded-control bg-base p-3 font-mono text-data text-secondary">
-          uv run python scripts/mint_ingest_token.py
-        </pre>
-        <p className="mt-1.5 text-[11px] leading-4 text-tertiary">
-          Self-service key management from this screen is Phase-2 scope.
-        </p>
-      </section>
+      <IngestTokenSection />
 
       <section className="rounded-card border-[0.5px] border-subtle bg-elevated p-5">
         <div className="flex items-center justify-between">
@@ -171,6 +151,256 @@ function PasswordSection() {
           {change.isPending ? 'Updating…' : 'Update password'}
         </button>
       </form>
+    </section>
+  )
+}
+
+function MfaSection() {
+  const { token } = useAuth()
+  const queryClient = useQueryClient()
+  const [enrolment, setEnrolment] = useState<api.MfaEnrolment | null>(null)
+  const [code, setCode] = useState('')
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const status = useQuery({
+    queryKey: ['mfa', 'status'],
+    queryFn: () => api.getMfaStatus(token!),
+    enabled: !!token,
+  })
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['mfa', 'status'] })
+
+  const enrol = useMutation({
+    mutationFn: () => api.enrolMfa(token!),
+    onSuccess: (data) => {
+      setEnrolment(data)
+      setMessage(null)
+      refresh()
+    },
+  })
+  const activate = useMutation({
+    mutationFn: () => api.activateMfa(token!, code.trim()),
+    onSuccess: () => {
+      setEnrolment(null)
+      setCode('')
+      setMessage({ ok: true, text: 'MFA is on. The next sign-in will ask for a code.' })
+      refresh()
+    },
+    onError: (err) => {
+      setMessage({
+        ok: false,
+        text:
+          err instanceof ApiError && err.status === 403
+            ? "That code didn't match. Codes rotate every 30 seconds — try the current one."
+            : "Couldn't activate MFA. Try again.",
+      })
+    },
+  })
+  const disable = useMutation({
+    mutationFn: () => api.disableMfa(token!, code.trim()),
+    onSuccess: () => {
+      setCode('')
+      setMessage({ ok: true, text: 'MFA is off.' })
+      refresh()
+    },
+    onError: (err) => {
+      setMessage({
+        ok: false,
+        text:
+          err instanceof ApiError && err.status === 403
+            ? "That code didn't match. Enter a current code to turn MFA off."
+            : "Couldn't disable MFA. Try again.",
+      })
+    },
+  })
+
+  const codeField =
+    'w-40 rounded-control border-[0.5px] border-subtle bg-base px-3 py-1.5 font-mono text-data tracking-[0.3em] text-primary outline-none transition-colors duration-120 placeholder:tracking-normal placeholder:text-tertiary focus:border-strong'
+
+  return (
+    <section className="rounded-card border-[0.5px] border-subtle bg-elevated p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="text-card-title">Multi-factor authentication</h2>
+        {status.data?.enabled && (
+          <span className="flex items-center gap-1.5 rounded-full border-[0.5px] border-accent/50 px-2 py-0.5 text-[11px] leading-4 text-accent">
+            <ShieldCheck size={11} strokeWidth={1.5} />
+            on
+          </span>
+        )}
+      </div>
+
+      {!status.data?.enabled && !enrolment && (
+        <div className="mt-2">
+          <p className="text-label text-secondary">
+            Add a TOTP authenticator (any standard app). Sign-ins will require a 6-digit code
+            on top of the password.
+          </p>
+          <button
+            type="button"
+            onClick={() => enrol.mutate()}
+            disabled={enrol.isPending}
+            className="mt-3 rounded-control bg-accent px-3 py-1.5 text-label font-medium text-(--bg-base) transition-colors duration-120 hover:bg-accent-dim disabled:opacity-60"
+          >
+            {enrol.isPending ? 'Generating…' : 'Set up MFA'}
+          </button>
+        </div>
+      )}
+
+      {enrolment && (
+        <div className="mt-3 space-y-3">
+          <p className="text-label text-secondary">
+            Add this secret to your authenticator app (or paste the URI into it), then confirm
+            with the code it shows. Nothing is enforced until you confirm.
+          </p>
+          <div className="rounded-control bg-base p-3">
+            <div className="text-[11px] leading-4 text-tertiary">Secret</div>
+            <div className="break-all font-mono text-data text-primary">{enrolment.secret}</div>
+            <div className="mt-2 text-[11px] leading-4 text-tertiary">URI</div>
+            <div className="break-all font-mono text-[11px] leading-4 text-secondary">
+              {enrolment.otpauth_uri}
+            </div>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              activate.mutate()
+            }}
+            className="flex items-center gap-2"
+          >
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{6,8}"
+              maxLength={8}
+              required
+              placeholder="123456"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className={codeField}
+            />
+            <button
+              type="submit"
+              disabled={activate.isPending || code.trim().length < 6}
+              className="rounded-control bg-accent px-3 py-1.5 text-label font-medium text-(--bg-base) transition-colors duration-120 hover:bg-accent-dim disabled:opacity-50"
+            >
+              {activate.isPending ? 'Checking…' : 'Confirm & enable'}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {status.data?.enabled && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            disable.mutate()
+          }}
+          className="mt-3"
+        >
+          <p className="text-label text-secondary">
+            Turning MFA off requires a current authenticator code.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{6,8}"
+              maxLength={8}
+              required
+              placeholder="123456"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className={codeField}
+            />
+            <button
+              type="submit"
+              disabled={disable.isPending || code.trim().length < 6}
+              className="rounded-control border-[0.5px] border-subtle px-3 py-1.5 text-label text-secondary transition-colors duration-120 hover:border-sev-critical/50 hover:text-sev-critical disabled:opacity-50"
+            >
+              {disable.isPending ? 'Checking…' : 'Disable MFA'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {message && (
+        <p className={`mt-2.5 text-label ${message.ok ? 'text-accent' : 'text-sev-critical'}`}>
+          {message.text}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function IngestTokenSection() {
+  const { token } = useAuth()
+  const [days, setDays] = useState(90)
+  const [minted, setMinted] = useState<api.IngestToken | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const mint = useMutation({
+    mutationFn: () => api.mintIngestToken(token!, days),
+    onSuccess: (data) => {
+      setMinted(data)
+      setCopied(false)
+    },
+  })
+
+  return (
+    <section className="rounded-card border-[0.5px] border-subtle bg-elevated p-5">
+      <h2 className="text-card-title">Ingest tokens</h2>
+      <p className="mt-1.5 text-label text-secondary">
+        Mint a long-lived token for a collector (Wazuh shipper, replay scripts). It is scoped
+        to this tenant with analyst rights and shown once — store it in the collector's
+        secret store.
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        <label className="flex items-center gap-2 text-label text-secondary">
+          Valid for
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="rounded-control border-[0.5px] border-subtle bg-base px-2 py-1.5 text-label text-primary outline-none focus:border-strong"
+          >
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+            <option value={180}>180 days</option>
+            <option value={365}>365 days</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => mint.mutate()}
+          disabled={mint.isPending}
+          className="rounded-control bg-accent px-3 py-1.5 text-label font-medium text-(--bg-base) transition-colors duration-120 hover:bg-accent-dim disabled:opacity-60"
+        >
+          {mint.isPending ? 'Minting…' : 'Mint token'}
+        </button>
+      </div>
+      {minted && (
+        <div className="mt-3 rounded-control bg-base p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] leading-4 text-tertiary">
+              Bearer token · {minted.expires_days} days · role {minted.role}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(minted.token).then(() => setCopied(true))
+              }}
+              className="flex items-center gap-1 text-[11px] leading-4 text-secondary transition-colors duration-120 hover:text-primary"
+            >
+              <Copy size={11} strokeWidth={1.5} />
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <div className="mt-1.5 max-h-24 overflow-y-auto break-all font-mono text-[11px] leading-4 text-secondary">
+            {minted.token}
+          </div>
+        </div>
+      )}
+      {mint.isError && (
+        <p className="mt-2 text-label text-sev-critical">Couldn't mint the token. Try again.</p>
+      )}
     </section>
   )
 }

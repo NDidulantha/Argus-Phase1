@@ -12,6 +12,8 @@ export function Login() {
   const [tenantSlug, setTenantSlug] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [mfaChallenge, setMfaChallenge] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -26,11 +28,19 @@ export function Login() {
     setNotice(null)
     setSubmitting(true)
     try {
-      await login(tenantSlug.trim(), email.trim(), password)
+      await login(tenantSlug.trim(), email.trim(), password, otpCode.trim() || undefined)
       navigate(from, { replace: true })
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setError("That tenant, email, or password didn't match. Try again.")
+      if (err instanceof ApiError && err.status === 401 && err.message === 'mfa_required') {
+        // password checked out — the account wants its second factor
+        setMfaChallenge(true)
+        setNotice('Enter the 6-digit code from your authenticator app.')
+      } else if (err instanceof ApiError && err.status === 401) {
+        setError(
+          mfaChallenge
+            ? "That code didn't match. Check your authenticator and try again."
+            : "That tenant, email, or password didn't match. Try again.",
+        )
       } else {
         setError("Couldn't reach ARGUS. Check your connection and try again.")
       }
@@ -104,6 +114,27 @@ export function Login() {
                 className={fieldClass}
               />
             </label>
+
+            {mfaChallenge && (
+              <label className="block">
+                <span className="mb-1.5 block text-label text-secondary">
+                  Authenticator code
+                </span>
+                <input
+                  type="text"
+                  required
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]{6,8}"
+                  maxLength={8}
+                  placeholder="123456"
+                  autoFocus
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value)}
+                  className={`${fieldClass} font-mono text-data tracking-[0.3em]`}
+                />
+              </label>
+            )}
 
             {error && (
               <p role="alert" className="text-label text-sev-critical">

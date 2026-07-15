@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiry_minutes: int = 60
     admin_api_key: str = "dev-admin-key-change-me"
+    # Fernet key for connector credentials at rest (Fernet.generate_key()).
+    # Empty = derived from jwt_secret, acceptable for local dev only.
+    credentials_key: str = ""
 
     # Enrichment providers: empty key = provider disabled.
     virustotal_api_key: str = ""

@@ -67,6 +67,7 @@ class LoginRequest(BaseModel):
     tenant_slug: str
     email: EmailStr
     password: str
+    otp_code: str | None = Field(default=None, min_length=6, max_length=8)
 
 
 class TokenOut(BaseModel):
