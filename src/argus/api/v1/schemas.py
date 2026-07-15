@@ -9,16 +9,32 @@ from pydantic import BaseModel, EmailStr, Field
 class TenantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9-]+$")
+    sector: str | None = Field(default=None, max_length=100)
 
 
 class TenantOut(BaseModel):
     id: uuid.UUID
     name: str
     slug: str
+    sector: str | None
     is_active: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TenantUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    sector: str | None = Field(default=None, max_length=100)
+    is_active: bool | None = None
+
+
+class TenantAdminOut(TenantOut):
+    """Tenant row for the operator console, with usage stats."""
+
+    user_count: int
+    event_count: int
+    open_alerts: int
 
 
 class UserCreate(BaseModel):
@@ -34,6 +50,17 @@ class UserOut(BaseModel):
     role: str
 
     model_config = {"from_attributes": True}
+
+
+class UserAdminOut(UserOut):
+    is_active: bool
+    created_at: datetime
+
+
+class UserUpdate(BaseModel):
+    role: str | None = Field(default=None, pattern=r"^(analyst|admin)$")
+    is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=128)
 
 
 class LoginRequest(BaseModel):

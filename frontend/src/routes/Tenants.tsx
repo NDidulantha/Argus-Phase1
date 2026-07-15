@@ -101,10 +101,11 @@ export function Tenants() {
         <p className="mt-2 max-w-2xl text-label text-secondary">
           Every session is scoped to one tenant: the JWT carries the tenant, and row-level
           security isolates its data end to end — it is impossible to see another client's
-          telemetry from here. Tenants and their users are provisioned through the admin API
-          (<span className="font-mono text-data">POST /api/v1/admin/tenants</span>, admin-key
-          protected), not from an analyst session. A cross-tenant management console for MSSP
-          operators is Phase-2 scope.
+          telemetry from here. Tenants and their users are managed in the{' '}
+          <Link to="/admin" className="text-accent hover:text-accent-dim">
+            operator console
+          </Link>{' '}
+          (admin-key protected), not from an analyst session.
         </p>
       </section>
     </div>

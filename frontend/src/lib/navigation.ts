@@ -12,6 +12,7 @@ import {
   Plug,
   Building2,
   Settings,
+  ShieldCheck,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -59,6 +60,7 @@ export const navGroups: NavGroup[] = [
       { label: 'Reports', path: '/reports', icon: FileText },
       { label: 'Integrations', path: '/integrations', icon: Plug },
       { label: 'Tenants', path: '/tenants', icon: Building2 },
+      { label: 'Admin', path: '/admin', icon: ShieldCheck },
       { label: 'Settings', path: '/settings', icon: Settings },
     ],
   },

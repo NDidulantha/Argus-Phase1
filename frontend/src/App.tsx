@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
+import { Admin } from './routes/Admin'
 import { Alerts } from './routes/Alerts'
 import { CaseDetail } from './routes/CaseDetail'
 import { Cases } from './routes/Cases'
@@ -33,6 +34,7 @@ const builtScreens: Record<string, () => React.JSX.Element> = {
   '/intel': ThreatIntel,
   '/reports': Reports,
   '/tenants': Tenants,
+  '/admin': Admin,
   '/settings': Settings,
 }
 

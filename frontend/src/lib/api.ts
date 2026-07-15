@@ -520,3 +520,80 @@ export async function deleteConnector(token: string, id: number): Promise<void> 
   })
   if (!res.ok) throw new ApiError(res.status, res.statusText)
 }
+
+// ---- MSSP operator console (X-Admin-Key protected, separate from the JWT session) ----
+
+export interface AdminTenantBase {
+  id: string
+  name: string
+  slug: string
+  sector: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface AdminTenant extends AdminTenantBase {
+  user_count: number
+  event_count: number
+  open_alerts: number
+}
+
+export interface AdminUser {
+  id: string
+  tenant_id: string
+  email: string
+  role: string
+  is_active: boolean
+  created_at: string
+}
+
+function adminInit(key: string, method?: string, body?: unknown): RequestInit {
+  return {
+    ...(method ? { method } : {}),
+    headers: { 'X-Admin-Key': key, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  }
+}
+
+export function adminListTenants(key: string) {
+  return request<AdminTenant[]>('/admin/tenants', adminInit(key))
+}
+
+export function adminCreateTenant(
+  key: string,
+  body: { name: string; slug: string; sector?: string },
+) {
+  return request<AdminTenantBase>('/admin/tenants', adminInit(key, 'POST', body))
+}
+
+export function adminUpdateTenant(
+  key: string,
+  tenantId: string,
+  patch: { name?: string; sector?: string; is_active?: boolean },
+) {
+  return request<AdminTenantBase>(`/admin/tenants/${tenantId}`, adminInit(key, 'PATCH', patch))
+}
+
+export function adminListUsers(key: string, tenantId: string) {
+  return request<AdminUser[]>(`/admin/tenants/${tenantId}/users`, adminInit(key))
+}
+
+export function adminCreateUser(
+  key: string,
+  tenantId: string,
+  body: { email: string; password: string; role: string },
+) {
+  return request<AdminUser>(`/admin/tenants/${tenantId}/users`, adminInit(key, 'POST', body))
+}
+
+export function adminUpdateUser(
+  key: string,
+  tenantId: string,
+  userId: string,
+  patch: { role?: string; is_active?: boolean; password?: string },
+) {
+  return request<AdminUser>(
+    `/admin/tenants/${tenantId}/users/${userId}`,
+    adminInit(key, 'PATCH', patch),
+  )
+}

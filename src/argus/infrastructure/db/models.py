@@ -43,6 +43,7 @@ class Tenant(Base):
     )
     name: Mapped[str] = mapped_column(Text, unique=True)
     slug: Mapped[str] = mapped_column(Text, unique=True)
+    sector: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
