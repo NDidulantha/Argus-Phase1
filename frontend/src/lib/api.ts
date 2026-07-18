@@ -441,6 +441,15 @@ export interface CTIFinding {
   confidence: number | null
   reference_url: string | null
   summary: string | null
+  details: Record<string, string | number | boolean | string[]>
+  raw: Record<string, unknown>
+}
+
+export interface CTISightings {
+  events: number
+  entity: boolean
+  first_seen: string | null
+  last_seen: string | null
 }
 
 export interface CTILookup {
@@ -449,6 +458,7 @@ export interface CTILookup {
   findings: CTIFinding[]
   providers_queried: number
   any_found: boolean
+  sightings: CTISightings | null
 }
 
 export function ctiLookup(token: string, indicatorType: IndicatorType, value: string) {
@@ -456,6 +466,23 @@ export function ctiLookup(token: string, indicatorType: IndicatorType, value: st
     '/cti/lookup',
     jsonInit(token, 'POST', { indicator_type: indicatorType, value }),
   )
+}
+
+export interface CTIHuntHit {
+  indicator_type: IndicatorType
+  value: string
+  local_events: number
+  max_confidence: number
+  findings: CTIFinding[]
+}
+
+export interface CTIHunt {
+  indicators_checked: number
+  hits: CTIHuntHit[]
+}
+
+export function ctiHunt(token: string, limit = 40) {
+  return request<CTIHunt>(`/cti/hunt?limit=${limit}`, jsonInit(token, 'POST', {}))
 }
 
 export interface ConnectorCatalogEntry {

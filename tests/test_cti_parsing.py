@@ -45,8 +45,9 @@ def test_virustotal_flagged_ip():
     data = {"data": {"id": "1.2.3.4", "attributes": {
         "last_analysis_stats": {"malicious": 9, "suspicious": 1, "harmless": 60, "undetected": 20},
         "tags": ["tor"], "last_analysis_date": 1721000000}}}
-    f = parse_virustotal("1.2.3.4", "ip", data)
+    f = parse_virustotal("1.2.3.4", "ip", data, resolutions=["evil.example.com"])
     assert f.found is True
+    assert f.details["historical_domains"] == ["evil.example.com"]
     assert f.confidence == 11  # 10 of 90 engines
     assert "10/90 engines" in f.summary
     assert f.reference_url == "https://www.virustotal.com/gui/ip-address/1.2.3.4"
@@ -81,6 +82,7 @@ def test_abuseipdb_reported_ip():
             "isp": "Evil Hosting GmbH", "lastReportedAt": "2026-07-17T09:00:00+00:00"}}
     f = parse_abuseipdb_intel("5.6.7.8", data)
     assert f.found is True
+    assert f.details["isp"] == "Evil Hosting GmbH"
     assert f.confidence == 87
     assert "tor-exit" in f.tags
     assert f.last_seen == "2026-07-17"

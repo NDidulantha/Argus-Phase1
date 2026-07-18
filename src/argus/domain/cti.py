@@ -30,6 +30,9 @@ class CTIFinding:
     confidence: int | None = None  # provider-reported, 0-100 where available
     reference_url: str | None = None  # CITATION — where an analyst can verify
     summary: str | None = None
+    # structured context for the UI detail grid: country, ASN, resolutions,
+    # hostnames, file names… — provider-specific but flat key -> value/list
+    details: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
 

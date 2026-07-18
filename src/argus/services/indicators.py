@@ -19,9 +19,12 @@ _HASH_RE = re.compile(r"\b([a-fA-F0-9]{64}|[a-fA-F0-9]{40}|[a-fA-F0-9]{32})\b")
 
 def _is_public_ip(value: str) -> bool:
     try:
-        return ipaddress.ip_address(value).is_global
+        ip = ipaddress.ip_address(value)
     except ValueError:
         return False
+    # multicast (SSDP/LLMNR/mDNS) counts as "global" but is not routeable
+    # threat surface — reputation lookups on it are noise and quota burn
+    return ip.is_global and not ip.is_multicast
 
 
 def _strings_in(obj: Any):

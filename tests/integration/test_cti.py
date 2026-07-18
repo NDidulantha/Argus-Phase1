@@ -72,3 +72,51 @@ async def test_invalid_cve_rejected(client):
     r = await client.post("/api/v1/cti/lookup",
         json={"indicator_type": "cve", "value": "not-a-cve"}, headers=auth)
     assert r.status_code == 422
+
+
+def _sysmon_with_ip(minute: int) -> dict:
+    return {"@timestamp": f"2020-08-07T14:{minute:02d}:00Z", "EventID": 3,
+            "Channel": "Microsoft-Windows-Sysmon/Operational", "Hostname": "wks-cti",
+            "Message": "Network connection detected", "SourceIp": "10.0.0.5",
+            "DestinationIp": "5.6.7.8"}
+
+
+async def test_lookup_reports_local_sightings(client):
+    auth = await _auth(client)
+    r = await client.post("/api/v1/events", json={
+        "source": "securitydatasets",
+        "events": [_sysmon_with_ip(0), _sysmon_with_ip(5)],
+    }, headers=auth)
+    assert r.json()["normalized"] == 2
+
+    r = await client.post("/api/v1/cti/lookup",
+        json={"indicator_type": "ip", "value": "5.6.7.8"}, headers=auth)
+    s = r.json()["sightings"]
+    assert s is not None
+    assert s["events"] == 2
+    assert s["first_seen"] and s["last_seen"]
+
+    # an indicator the tenant never saw carries no sightings block
+    r = await client.post("/api/v1/cti/lookup",
+        json={"indicator_type": "ip", "value": "9.9.9.9"}, headers=auth)
+    assert r.json()["sightings"] is None
+
+
+async def test_hunt_sweep_flags_stored_indicators(client):
+    auth = await _auth(client)
+    await client.post("/api/v1/events", json={
+        "source": "securitydatasets",
+        "events": [_sysmon_with_ip(0), _sysmon_with_ip(5), _sysmon_with_ip(10)],
+    }, headers=auth)
+
+    r = await client.post("/api/v1/cti/hunt", headers=auth)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["indicators_checked"] >= 1  # 5.6.7.8 (public); 10.0.0.5 excluded
+    hit = next(h for h in d["hits"] if h["value"] == "5.6.7.8")
+    assert hit["indicator_type"] == "ip"
+    assert hit["local_events"] == 3
+    assert hit["findings"][0]["provider"] == "faketi"
+
+    # private IPs never burn provider quota
+    assert all(h["value"] != "10.0.0.5" for h in d["hits"])
