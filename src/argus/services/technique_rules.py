@@ -40,6 +40,8 @@ def _facts(event: NormalizedEvent) -> dict[str, Any]:
         "command_line": low("command_line"),
         "action": (event.action or "").lower(),
         "provider": low("provider"),
+        "registry_target": low("registry_target"),
+        "dns_query": low("dns_query"),
         # broad text field for rules that need to match indicators buried
         # in the raw message (Sysmon puts a lot only in Message).
         "message": low("message_excerpt") + " " + low("details"),
@@ -104,6 +106,59 @@ _RULES: list[Rule] = [
     ),
     # Service installation (EID 7045) = persistence / execution.
     ("T1543.003", 65, lambda f: f["event_id"] == "7045"),
+    # sc.exe creating/configuring a service = service persistence/exec.
+    (
+        "T1543.003",
+        55,
+        lambda f: f["image"].endswith("sc.exe")
+        and any(v in f["command_line"] for v in ("create", "config", "start")),
+    ),
+    # PsExec / psexesvc = remote service execution over SMB admin shares.
+    # A hallmark of hands-on-keyboard lateral movement.
+    (
+        "T1021.002",
+        75,
+        lambda f: "psexec" in f["image"]
+        or f["image"].endswith("psexesvc.exe")
+        or "psexesvc" in f["command_line"],
+    ),
+    # Sysmon EID 8 CreateRemoteThread = classic process injection.
+    ("T1055", 70, lambda f: f["event_id"] == "8"),
+    # SDelete = secure file wipe: indicator removal / anti-forensics.
+    (
+        "T1070.004",
+        70,
+        lambda f: "sdelete" in f["image"] or "sdelete" in f["command_line"],
+    ),
+    # Registry Run key written (Sysmon EID 12/13) = autostart persistence.
+    (
+        "T1547.001",
+        75,
+        lambda f: "currentversion\\run" in f["registry_target"]
+        or "currentversion\\runonce" in f["registry_target"],
+    ),
+    # certutil decoding/downloading = ingress transfer / deobfuscation LOLBin.
+    (
+        "T1140",
+        65,
+        lambda f: f["image"].endswith("certutil.exe")
+        and any(v in f["command_line"] for v in ("-decode", "-urlcache", "-verifyctl")),
+    ),
+    # mshta executing = signed-binary proxy execution of HTA/script.
+    ("T1218.005", 65, lambda f: f["image"].endswith("mshta.exe")),
+    # wscript / cscript = Windows Script Host execution (VBScript/JScript).
+    (
+        "T1059.005",
+        50,
+        lambda f: f["image"].endswith("wscript.exe") or f["image"].endswith("cscript.exe"),
+    ),
+    # WMI process launch (wmic.exe, or WmiPrvSE spawning a child) = T1047.
+    (
+        "T1047",
+        50,
+        lambda f: f["image"].endswith("wmic.exe")
+        or f["parent_image"].endswith("wmiprvse.exe"),
+    ),
 ]
 
 

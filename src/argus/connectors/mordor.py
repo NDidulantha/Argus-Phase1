@@ -43,10 +43,24 @@ class MordorNormalizer:
             ("ParentImage", "parent_image"),
             ("TargetImage", "target_image"),
             ("TargetFilename", "target_filename"),
+            ("TargetObject", "registry_target"),  # Sysmon EID 12/13 registry
+            ("QueryName", "dns_query"),            # Sysmon EID 22 DNS
             ("Details", "details"),
         ):
             if payload.get(key) is not None:
                 attributes[attr] = payload[key]
+
+        # Security-channel process creation (EID 4688) names the process
+        # differently from Sysmon EID 1: NewProcessName / ParentProcessName.
+        # Without this fallback the process image is empty and every
+        # process-based rule silently misses half the telemetry.
+        if "process_image" not in attributes and payload.get("NewProcessName"):
+            attributes["process_image"] = payload["NewProcessName"]
+        if "parent_image" not in attributes and payload.get("ParentProcessName"):
+            attributes["parent_image"] = payload["ParentProcessName"]
+        # Sysmon EID 8 (CreateRemoteThread): the injector is SourceImage.
+        if "process_image" not in attributes and payload.get("SourceImage"):
+            attributes["process_image"] = payload["SourceImage"]
 
         # Sysmon often carries the decisive indicator (e.g. the accessed
         # process) only in the Message body. Keep it available to the rule
