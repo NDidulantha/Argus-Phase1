@@ -207,3 +207,50 @@ async def test_crowdstrike_poll_normalizes_falcon_alert(client, monkeypatch):
         assert ev.severity == 70
         assert ev.attributes["mitre_technique_ids"] == ["T1036"]  # ATT&CK carried through
         assert ev.attributes["process_image"] == "svch0st.exe"
+
+
+CORTEX_DRAFT = {
+    "vendor": "cortex_xdr",
+    "name": "Lab Cortex",
+    "endpoint_url": "https://api-lab.xdr.paloaltonetworks.test",
+    "credentials": {"api_key_id": "17", "api_key": "sekret"},
+    "verify_tls": True,
+}
+
+
+async def test_cortex_poll_normalizes_alert(client, monkeypatch):
+    """Third vendor end-to-end: a Cortex XDR alert (epoch-ms time, string
+    severity, "T#### - name" technique) normalizes and lands correctly."""
+    auth, tid = await _auth(client, "cr-cx")
+    r = await client.post("/api/v1/connectors", json=CORTEX_DRAFT, headers=auth)
+    assert r.status_code == 201, r.text
+    cid = r.json()["id"]
+
+    alert = {
+        "alert_id": "42",
+        "creation_time": 1700000000000,
+        "severity": "high",
+        "category": "Malware",
+        "description": "process injection",
+        "host_name": "FIN-WS-07",
+        "user_name": "jdoe",
+        "action_local_ip": "10.0.0.9",
+        "mitre_technique_id_and_name": "T1055 - Process Injection",
+        "causality_actor_process_image_name": "rundll32.exe",
+    }
+    monkeypatch.setattr(
+        runtime, "get_collector",
+        lambda v, c: FakeCollector([alert], "1700000000001", source="cortex_xdr"),
+    )
+    r = await client.post(f"/api/v1/connectors/{cid}/poll", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["last_ingested"] == 1
+
+    async with tenant_session(uuid.UUID(tid)) as s:
+        events = (await s.scalars(select(NormalizedEvent))).all()
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.host_name == "FIN-WS-07"
+        assert ev.severity == 3  # "high" -> 3
+        assert ev.event_time.year == 2023  # epoch ms decoded
+        assert ev.attributes["mitre_technique_ids"] == ["T1055"]

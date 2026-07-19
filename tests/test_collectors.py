@@ -2,8 +2,10 @@
 
 from argus.connectors.collectors import (
     build_alert_filter,
+    build_cortex_filters,
     build_wazuh_query,
     get_collector,
+    parse_cortex_alerts,
     parse_crowdstrike_alerts,
     parse_wazuh_hits,
 )
@@ -43,9 +45,10 @@ def test_parse_empty_leaves_cursor_none():
     assert result.cursor is None
 
 
-def test_both_shipped_vendors_have_collectors():
+def test_shipped_vendors_have_collectors():
     assert get_collector("wazuh", {"username": "u", "password": "p"}) is not None
     assert get_collector("crowdstrike", {"client_id": "i", "client_secret": "s"}) is not None
+    assert get_collector("cortex_xdr", {"api_key_id": "i", "api_key": "k"}) is not None
     assert get_collector("sentinel", {}) is None  # planned, no collector yet
 
 
@@ -69,5 +72,33 @@ def test_crowdstrike_parse_extracts_alerts_and_max_cursor():
 
 def test_crowdstrike_parse_empty_is_a_noop():
     result = parse_crowdstrike_alerts({"resources": []})
+    assert result.payloads == []
+    assert result.cursor is None
+
+
+def test_cortex_filter_uses_cursor_as_int_and_since_as_ms():
+    q = build_cortex_filters("1700000000000", "x", 50)
+    assert q["request_data"]["filters"][0] == {
+        "field": "creation_time", "operator": "gte", "value": 1700000000000,
+    }
+    assert q["request_data"]["sort"] == {"field": "creation_time", "keyword": "asc"}
+    # first run: ISO `since` is converted to epoch ms
+    q2 = build_cortex_filters(None, "2026-07-19T00:00:00Z", 10)
+    assert q2["request_data"]["filters"][0]["value"] == 1784419200000
+
+
+def test_cortex_parse_advances_cursor_past_max():
+    body = {"reply": {"alerts": [
+        {"alert_id": "1", "creation_time": 1700000001000},
+        {"alert_id": "2", "creation_time": 1700000003000},
+        {"alert_id": "3", "creation_time": 1700000002000},
+    ]}}
+    result = parse_cortex_alerts(body)
+    assert len(result.payloads) == 3
+    assert result.cursor == "1700000003001"  # max + 1 ms so gte never re-pulls it
+
+
+def test_cortex_parse_empty_is_a_noop():
+    result = parse_cortex_alerts({"reply": {"alerts": []}})
     assert result.payloads == []
     assert result.cursor is None

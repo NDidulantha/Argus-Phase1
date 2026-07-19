@@ -54,6 +54,21 @@ _CROWDSTRIKE_MAPPING = {
     "filename": "process_image",
 }
 
+# Mirrors CortexXdrNormalizer. creation_time is epoch ms; the technique id is
+# parsed out of "T1055 - Process Injection" into mitre_technique_ids.
+_CORTEX_MAPPING = {
+    "creation_time": "event_time",
+    "category": "category",
+    "description": "action",
+    "severity": "severity",
+    "host_name": "host_name",
+    "user_name": "user_name",
+    "action_local_ip": "src_ip",
+    "action_remote_ip": "dst_ip",
+    "mitre_technique_id_and_name": "mitre_technique_ids",
+    "causality_actor_process_command_line": "command_line",
+}
+
 CATALOG: list[dict[str, Any]] = [
     {
         "vendor": "wazuh",
@@ -67,8 +82,11 @@ CATALOG: list[dict[str, Any]] = [
     {
         "vendor": "cortex_xdr",
         "name": "Cortex XDR",
-        "description": "Palo Alto Cortex XDR incidents and alerts.",
-        "supported": False,
+        "description": "Pull Cortex XDR alerts via the get_alerts API.",
+        "supported": True,
+        "endpoint_hint": "https://api-<fqdn>.xdr.paloaltonetworks.com",
+        "credential_fields": ["api_key_id", "api_key"],
+        "default_mapping": _CORTEX_MAPPING,
     },
     {
         "vendor": "crowdstrike",
@@ -116,6 +134,8 @@ async def probe_connector(
         return await _probe_wazuh(endpoint_url, credentials, verify_tls)
     if vendor == "crowdstrike":
         return await _probe_crowdstrike(endpoint_url, credentials, verify_tls)
+    if vendor == "cortex_xdr":
+        return await _probe_cortex(endpoint_url, credentials, verify_tls)
     return False, f"no collector shipped for vendor '{vendor}' yet"
 
 
@@ -164,6 +184,32 @@ async def _probe_crowdstrike(
     except ValueError:
         return False, "the endpoint answered, but not like the Falcon OAuth2 API"
     return (True, "authenticated with Falcon") if token else (False, "no access token returned")
+
+
+async def _probe_cortex(
+    endpoint_url: str, credentials: dict[str, Any], verify_tls: bool
+) -> tuple[bool, str]:
+    """Minimal alerts query (search_to 1) — proves the API key headers work."""
+    url = endpoint_url.rstrip("/") + "/public_api/v1/alerts/get_alerts_multi_events/"
+    headers = {
+        "x-xdr-auth-id": credentials.get("api_key_id", ""),
+        "Authorization": credentials.get("api_key", ""),
+    }
+    body = {"request_data": {"search_from": 0, "search_to": 1}}
+    try:
+        async with httpx.AsyncClient(verify=verify_tls, timeout=6.0) as client:
+            resp = await client.post(url, headers=headers, json=body)
+    except httpx.HTTPError as e:
+        return False, f"could not reach Cortex XDR: {e.__class__.__name__}: {e}"
+    if resp.status_code in (401, 403):
+        return False, "Cortex XDR rejected those API credentials"
+    if resp.status_code != 200:
+        return False, f"Cortex XDR answered HTTP {resp.status_code}"
+    try:
+        resp.json()
+    except ValueError:
+        return False, "the endpoint answered, but not like the Cortex XDR API"
+    return True, "authenticated with Cortex XDR"
 
 
 class ConnectorOut(BaseModel):

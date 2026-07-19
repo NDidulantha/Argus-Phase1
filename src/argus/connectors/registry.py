@@ -5,6 +5,7 @@ Unknown sources are NOT rejected: ARGUS always stores the raw event
 for that vendor exists. Adding a vendor = one normalizer class + one line.
 """
 
+from argus.connectors.cortex_xdr import CortexXdrNormalizer
 from argus.connectors.crowdstrike import CrowdStrikeNormalizer
 from argus.connectors.evtx_normalizer import EvtxNormalizer
 from argus.connectors.mordor import MordorNormalizer
@@ -16,6 +17,7 @@ _NORMALIZERS: dict[str, EventNormalizer] = {
     MordorNormalizer.source_type: MordorNormalizer(),
     EvtxNormalizer.source_type: EvtxNormalizer(),
     CrowdStrikeNormalizer.source_type: CrowdStrikeNormalizer(),
+    CortexXdrNormalizer.source_type: CortexXdrNormalizer(),
 }
 
 

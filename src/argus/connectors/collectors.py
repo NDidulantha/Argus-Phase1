@@ -12,6 +12,7 @@ a live indexer; collect() is the only part that touches the network.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 
 import httpx
@@ -156,11 +157,71 @@ class CrowdStrikeCollector:
         return parse_crowdstrike_alerts(h.json())
 
 
+# --- Palo Alto Cortex XDR (get_alerts_multi_events) ---------------------
+
+def _iso_to_ms(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+def build_cortex_filters(cursor: str | None, since: str, limit: int) -> dict[str, Any]:
+    """Cortex request_data: alerts at/after the resume point, oldest first.
+
+    Cortex's creation_time is epoch milliseconds and its operators are gte/lte
+    (no strict >), so the cursor is stored as max(creation_time)+1 ms — gte on
+    that never re-pulls the boundary alert. `since` (ISO, now - lookback)
+    bounds the first poll and is converted to ms here.
+    """
+    lower = int(cursor) if cursor else _iso_to_ms(since)
+    return {
+        "request_data": {
+            "filters": [{"field": "creation_time", "operator": "gte", "value": lower}],
+            "sort": {"field": "creation_time", "keyword": "asc"},
+            "search_from": 0,
+            "search_to": limit,
+        }
+    }
+
+
+def parse_cortex_alerts(body: dict[str, Any]) -> CollectResult:
+    """Extract alerts and advance the cursor to max(creation_time)+1 ms."""
+    alerts = (body.get("reply") or {}).get("alerts") or []
+    payloads = [a for a in alerts if isinstance(a, dict)]
+    max_ms: int | None = None
+    for a in payloads:
+        ct = a.get("creation_time")
+        if isinstance(ct, (int, float)) and (max_ms is None or ct > max_ms):
+            max_ms = int(ct)
+    cursor = str(max_ms + 1) if max_ms is not None else None
+    return CollectResult(payloads=payloads, cursor=cursor, detail=f"pulled {len(payloads)} alerts")
+
+
+class CortexXdrCollector:
+    vendor = "cortex_xdr"
+    source = "cortex_xdr"
+
+    def __init__(self, credentials: dict[str, Any], *, timeout: float = 20.0):
+        self._auth_id = credentials.get("api_key_id", "")
+        self._api_key = credentials.get("api_key", "")
+        self._timeout = timeout
+
+    async def collect(
+        self, connector: Connector, cursor: str | None, since: str, *, limit: int
+    ) -> CollectResult:
+        url = connector.endpoint_url.rstrip("/") + "/public_api/v1/alerts/get_alerts_multi_events/"
+        headers = {"x-xdr-auth-id": self._auth_id, "Authorization": self._api_key}
+        body = build_cortex_filters(cursor, since, limit)
+        async with httpx.AsyncClient(verify=connector.verify_tls, timeout=self._timeout) as client:
+            resp = await client.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        return parse_cortex_alerts(resp.json())
+
+
 # vendor -> factory(credentials) -> Collector. A vendor is pollable only if it
 # appears here AND has a normalizer registered for its `source`.
 _COLLECTORS: dict[str, Any] = {
     WazuhCollector.vendor: WazuhCollector,
     CrowdStrikeCollector.vendor: CrowdStrikeCollector,
+    CortexXdrCollector.vendor: CortexXdrCollector,
 }
 
 
