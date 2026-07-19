@@ -11,6 +11,7 @@ Query/parse logic is split into pure helpers so it is unit-testable without
 a live indexer; collect() is the only part that touches the network.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -45,31 +46,51 @@ class Collector(Protocol):
 _WAZUH_INDEX = "wazuh-alerts-*"
 
 
-def build_wazuh_query(cursor: str | None, since: str, limit: int) -> dict[str, Any]:
-    """OpenSearch body: events strictly after the resume point, oldest first.
+def _wazuh_search_after(cursor: str | None) -> list | None:
+    """A v2 cursor is the JSON-encoded `sort` array of the last hit."""
+    if not cursor:
+        return None
+    try:
+        value = json.loads(cursor)
+        return value if isinstance(value, list) else None
+    except (ValueError, TypeError):
+        return None  # legacy plain-timestamp cursor -> handled as a range floor
 
-    `gt` (strictly greater) means the boundary doc is never re-ingested;
-    ascending sort keeps the cursor monotonic so a crash mid-batch resumes
-    cleanly. On the first run (no cursor) we bound the pull with `since`
-    (now - lookback) so a fresh connector doesn't drag in years of history.
+
+def build_wazuh_query(cursor: str | None, since: str, limit: int) -> dict[str, Any]:
+    """OpenSearch body using search_after for drop-free, duplicate-free paging.
+
+    A pure `@timestamp > cursor` range drops events when two docs share the
+    same millisecond at a batch boundary. Instead we sort by [@timestamp, _id]
+    and resume with `search_after: [ts, id]` — the _id tiebreaker makes the
+    position unambiguous, so identical timestamps page cleanly with no loss and
+    no repeats. The first poll (no cursor) has no position yet, so it is bounded
+    by a `since` range floor; a legacy plain-timestamp cursor resumes as a floor
+    too and upgrades to a composite cursor on the next batch.
+    (Sorting on _id follows the OpenSearch search_after docs; a busy production
+    index may pair this with a Point-In-Time.)
     """
-    lower = cursor if cursor else since
-    return {
+    query: dict[str, Any] = {
         "size": limit,
-        "sort": [{"@timestamp": {"order": "asc"}}],
-        "query": {"range": {"@timestamp": {"gt": lower}}},
+        "sort": [{"@timestamp": {"order": "asc"}}, {"_id": {"order": "asc"}}],
     }
+    after = _wazuh_search_after(cursor)
+    if after is not None:
+        query["search_after"] = after
+    else:
+        query["query"] = {"range": {"@timestamp": {"gte": cursor if cursor else since}}}
+    return query
 
 
 def parse_wazuh_hits(body: dict[str, Any]) -> CollectResult:
-    """Extract the alert docs and the new cursor (max @timestamp seen)."""
+    """Extract the alert docs; the new cursor is the last hit's sort values."""
     hits = (body.get("hits") or {}).get("hits") or []
     payloads = [h["_source"] for h in hits if isinstance(h.get("_source"), dict)]
     cursor = None
-    for p in payloads:
-        ts = p.get("@timestamp")
-        if ts and (cursor is None or ts > cursor):
-            cursor = ts
+    if hits:
+        sort_values = hits[-1].get("sort")  # [ts, _id] of the greatest hit
+        if sort_values:
+            cursor = json.dumps(sort_values)
     return CollectResult(payloads=payloads, cursor=cursor, detail=f"pulled {len(payloads)} alerts")
 
 
@@ -94,24 +115,67 @@ class WazuhCollector:
 
 # --- CrowdStrike Falcon (Alerts API v2) ---------------------------------
 
-def build_alert_filter(cursor: str | None, since: str) -> str:
-    """Falcon FQL: alerts whose timestamp is strictly after the resume point.
+def _decode_boundary(cursor: str | None) -> dict | None:
+    """A v2 cursor is {"ts": <max timestamp>, "ids": [composite_ids at ts]}."""
+    if not cursor:
+        return None
+    try:
+        value = json.loads(cursor)
+        return value if isinstance(value, dict) else None
+    except (ValueError, TypeError):
+        return None  # legacy plain-timestamp cursor
 
-    Same monotonic-cursor contract as Wazuh — `>` never re-pulls the boundary
-    alert; `since` (now - lookback) bounds the very first poll.
+
+def build_alert_filter(cursor: str | None, since: str) -> str:
+    """Falcon FQL for drop-free incremental paging.
+
+    Falcon has no OpenSearch search_after, so we filter `timestamp:>=` the
+    boundary and remember the composite_ids already ingested at that exact
+    timestamp — the next poll re-sees them (gte) and skips them in the parser.
+    A strict `>` instead would drop any alert sharing the boundary millisecond
+    that a `limit`-truncated batch didn't reach. First run / legacy cursor use
+    `>` on `since` / the plain timestamp.
     """
+    boundary = _decode_boundary(cursor)
+    if boundary and boundary.get("ts"):
+        return f"timestamp:>='{boundary['ts']}'"
     return f"timestamp:>'{cursor if cursor else since}'"
 
 
-def parse_crowdstrike_alerts(body: dict[str, Any]) -> CollectResult:
-    """Extract hydrated alert resources and the new cursor (max timestamp)."""
-    resources = body.get("resources") or []
-    payloads = [r for r in resources if isinstance(r, dict)]
+def parse_crowdstrike_alerts(
+    body: dict[str, Any], prev_cursor: str | None = None
+) -> CollectResult:
+    """Hydrated alerts minus the ones already ingested at the prior boundary.
+
+    New cursor = the greatest timestamp seen plus every composite_id at that
+    timestamp (accumulated across polls while parked on the same boundary), so
+    a later gte re-fetch skips them all — no drops, no duplicates.
+    """
+    prev = _decode_boundary(prev_cursor) or {}
+    seen = set(prev.get("ids") or [])
+    prev_ts = prev.get("ts")
+
+    payloads: list[dict[str, Any]] = []
+    max_ts: str | None = None
+    ids_at_max: list[str] = []
+    for r in body.get("resources") or []:
+        if not isinstance(r, dict) or r.get("composite_id") in seen:
+            continue  # already ingested at the previous boundary timestamp
+        payloads.append(r)
+        ts, cid = r.get("timestamp"), r.get("composite_id")
+        if not ts:
+            continue
+        if max_ts is None or ts > max_ts:
+            max_ts, ids_at_max = ts, [cid]
+        elif ts == max_ts:
+            ids_at_max.append(cid)
+
     cursor = None
-    for p in payloads:
-        ts = p.get("timestamp")
-        if ts and (cursor is None or ts > cursor):
-            cursor = ts
+    if max_ts is not None:
+        ids = set(ids_at_max)
+        if prev_ts == max_ts:
+            ids |= seen  # still on the same boundary -> keep the whole skip set
+        cursor = json.dumps({"ts": max_ts, "ids": sorted(i for i in ids if i)})
     return CollectResult(payloads=payloads, cursor=cursor, detail=f"pulled {len(payloads)} alerts")
 
 
@@ -154,7 +218,7 @@ class CrowdStrikeCollector:
                 f"{base}/alerts/entities/alerts/v2", headers=headers, json={"composite_ids": ids}
             )
             h.raise_for_status()
-        return parse_crowdstrike_alerts(h.json())
+        return parse_crowdstrike_alerts(h.json(), cursor)
 
 
 # --- Palo Alto Cortex XDR (get_alerts_multi_events) ---------------------
