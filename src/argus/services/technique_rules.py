@@ -68,14 +68,17 @@ _RULES: list[Rule] = [
         lambda f: "powershell" in f["image"] + f["provider"] + f["channel"]
         and ("-enc" in f["command_line"] or "-encodedcommand" in f["command_line"]),
     ),
-    # Any PowerShell execution (lower confidence — could be benign admin).
+    # PowerShell *execution* only: a process-creation event with a
+    # powershell image, or a script-block log (EID 4104 = code the engine
+    # actually compiled). Matching every event powershell.exe merely
+    # touches (registry writes, DLL loads, module logs 800/4103) tagged
+    # 167k events on the APT29 evals and drowned the evidence objects.
     (
         "T1059.001",
-        50,
-        lambda f: "powershell" in f["image"]
-        or "powershell" in f["provider"]
-        or "powershell" in f["channel"],
+        60,
+        lambda f: f["event_id"] in ("1", "4688") and "powershell" in f["image"],
     ),
+    ("T1059.001", 55, lambda f: f["event_id"] == "4104"),
     # Windows cmd shell execution.
     ("T1059.003", 45, lambda f: f["image"].endswith("cmd.exe")),
     # Sysmon EID 1 process creation from Office apps = suspicious spawn.
@@ -158,6 +161,84 @@ _RULES: list[Rule] = [
         50,
         lambda f: f["image"].endswith("wmic.exe")
         or f["parent_image"].endswith("wmiprvse.exe"),
+    ),
+    # Sysmon EID 19/20/21: WMI event filter/consumer/binding = fileless
+    # persistence via event subscription. Rare and almost never benign.
+    ("T1546.003", 85, lambda f: f["event_id"] in ("19", "20", "21")),
+    # Sysmon EID 2 from a script host = timestomping. Blanket EID 2 is
+    # noise (Azure agent, ProvTool, servicing all rewrite timestamps);
+    # a shell doing it is deliberate anti-forensics.
+    (
+        "T1070.006",
+        80,
+        lambda f: f["event_id"] == "2"
+        and any(
+            s in f["image"]
+            for s in ("powershell", "cmd.exe", "wscript", "cscript", "mshta", "rundll32")
+        ),
+    ),
+    # shell\open\command class hijack (sdclt/fodhelper-style UAC bypass):
+    # an auto-elevating binary reads the hijacked verb from HKCU. Only a
+    # shell/script host writing the key is hijack staging — svchost,
+    # Outlook, Teams etc. register file associations there legitimately.
+    (
+        "T1548.002",
+        80,
+        lambda f: f["event_id"] in ("12", "13")
+        and "shell\\open\\command" in f["registry_target"]
+        and any(
+            s in f["image"]
+            for s in ("powershell", "cmd.exe", "wscript", "cscript", "mshta", "reg.exe")
+        ),
+    ),
+    # Mimikatz tradecraft in script blocks / command lines.
+    (
+        "T1558.001",
+        90,
+        lambda f: "kerberos::golden" in f["message"] + f["command_line"],
+    ),
+    (
+        "T1003.001",
+        85,
+        lambda f: any(
+            s in f["message"] + f["command_line"]
+            for s in ("invoke-mimikatz", "sekurlsa::", "lsadump::")
+        ),
+    ),
+    # PowerShell collection tooling (PoshC2 / PowerSploit function names
+    # and the Win32 APIs they wrap).
+    (
+        "T1113",
+        75,
+        lambda f: "invoke-screencapture" in f["message"] or "copyfromscreen" in f["message"],
+    ),
+    ("T1115", 65, lambda f: "get-clipboard" in f["message"]),
+    (
+        "T1056.001",
+        85,
+        lambda f: "get-keystrokes" in f["message"] or "getasynckeystate" in f["message"],
+    ),
+    # Certificate/private-key theft from user stores.
+    (
+        "T1552.004",
+        80,
+        lambda f: "get-privatekeys" in f["message"] or "export-pfxcertificate" in f["message"],
+    ),
+    # PowerShell probing or disabling AMSI. Gated on a PowerShell source
+    # so benign amsi.dll image-loads (Sysmon EID 7) never match.
+    (
+        "T1562.001",
+        70,
+        lambda f: "powershell" in f["provider"] + f["channel"]
+        and any(s in f["message"] for s in ("amsiinitfailed", "amsiutils", "amsi.dll")),
+    ),
+    # Bulk document sweep of a user profile = local data collection.
+    (
+        "T1005",
+        70,
+        lambda f: "childitem" in f["message"]
+        and "-include" in f["message"]
+        and "*.doc" in f["message"],
     ),
 ]
 
