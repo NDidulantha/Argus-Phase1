@@ -51,7 +51,9 @@ async def test_catalog_lists_supported_and_planned(client):
     by_vendor = {c["vendor"]: c for c in catalog}
     assert by_vendor["wazuh"]["supported"] is True
     assert by_vendor["wazuh"]["default_mapping"]
-    assert by_vendor["crowdstrike"]["supported"] is False
+    assert by_vendor["crowdstrike"]["supported"] is True  # second shipped collector
+    assert by_vendor["crowdstrike"]["default_mapping"]
+    assert by_vendor["sentinel"]["supported"] is False  # still planned
 
 
 async def test_wizard_draft_test_fails_cleanly_when_unreachable(client):
@@ -99,7 +101,7 @@ async def test_connector_lifecycle_and_health(client, monkeypatch):
 async def test_unsupported_vendor_rejected(client):
     auth = await _auth(client, "conn-bad")
     r = await client.post(
-        "/api/v1/connectors", json={**WAZUH_DRAFT, "vendor": "crowdstrike"}, headers=auth
+        "/api/v1/connectors", json={**WAZUH_DRAFT, "vendor": "sentinel"}, headers=auth
     )
     assert r.status_code == 400
 

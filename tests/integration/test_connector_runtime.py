@@ -63,9 +63,8 @@ def _alert(ts: str, srcip: str = "8.8.8.8") -> dict:
 
 
 class FakeCollector:
-    source = "wazuh"
-
-    def __init__(self, payloads, cursor):
+    def __init__(self, payloads, cursor, source="wazuh"):
+        self.source = source
         self._payloads = payloads
         self._cursor = cursor
         self.seen_cursor = "unset"
@@ -73,6 +72,30 @@ class FakeCollector:
     async def collect(self, connector, cursor, since, *, limit):
         self.seen_cursor = cursor
         return CollectResult(payloads=self._payloads, cursor=self._cursor)
+
+
+CROWDSTRIKE_DRAFT = {
+    "vendor": "crowdstrike",
+    "name": "Lab Falcon",
+    "endpoint_url": "https://api.crowdstrike.test",
+    "credentials": {"client_id": "cid", "client_secret": "sec"},
+    "verify_tls": True,
+}
+
+
+def _falcon_alert(ts: str) -> dict:
+    return {
+        "composite_id": f"ldt:{ts}",
+        "timestamp": ts,
+        "severity": 70,
+        "tactic": "Defense Evasion",
+        "technique_id": "T1036",
+        "description": "masquerading as a system binary",
+        "device": {"hostname": "WIN-01", "external_ip": "203.0.113.5"},
+        "user_name": "jdoe",
+        "filename": "svch0st.exe",
+        "cmdline": "svch0st.exe -x",
+    }
 
 
 async def test_poll_ingests_alerts_and_advances_cursor(client, monkeypatch):
@@ -156,3 +179,31 @@ async def test_poll_records_error_on_collector_failure(client, monkeypatch):
     body = r.json()
     assert body["status"] == "error"
     assert "unreachable" in body["last_error"]
+
+
+async def test_crowdstrike_poll_normalizes_falcon_alert(client, monkeypatch):
+    """The second vendor end-to-end: a Falcon alert pulled by the runtime is
+    normalized by the crowdstrike normalizer and lands with its ATT&CK
+    technique carried through — proving the Collector protocol generalizes."""
+    auth, tid = await _auth(client, "cr-cs")
+    r = await client.post("/api/v1/connectors", json=CROWDSTRIKE_DRAFT, headers=auth)
+    assert r.status_code == 201, r.text
+    cid = r.json()["id"]
+
+    alert = _falcon_alert("2026-07-19T10:00:00Z")
+    monkeypatch.setattr(
+        runtime, "get_collector",
+        lambda v, c: FakeCollector([alert], "2026-07-19T10:00:00Z", source="crowdstrike"),
+    )
+    r = await client.post(f"/api/v1/connectors/{cid}/poll", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["last_ingested"] == 1
+
+    async with tenant_session(uuid.UUID(tid)) as s:
+        events = (await s.scalars(select(NormalizedEvent))).all()
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.host_name == "WIN-01"
+        assert ev.severity == 70
+        assert ev.attributes["mitre_technique_ids"] == ["T1036"]  # ATT&CK carried through
+        assert ev.attributes["process_image"] == "svch0st.exe"

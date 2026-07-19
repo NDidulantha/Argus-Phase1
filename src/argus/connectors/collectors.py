@@ -91,10 +91,76 @@ class WazuhCollector:
         return parse_wazuh_hits(resp.json())
 
 
+# --- CrowdStrike Falcon (Alerts API v2) ---------------------------------
+
+def build_alert_filter(cursor: str | None, since: str) -> str:
+    """Falcon FQL: alerts whose timestamp is strictly after the resume point.
+
+    Same monotonic-cursor contract as Wazuh — `>` never re-pulls the boundary
+    alert; `since` (now - lookback) bounds the very first poll.
+    """
+    return f"timestamp:>'{cursor if cursor else since}'"
+
+
+def parse_crowdstrike_alerts(body: dict[str, Any]) -> CollectResult:
+    """Extract hydrated alert resources and the new cursor (max timestamp)."""
+    resources = body.get("resources") or []
+    payloads = [r for r in resources if isinstance(r, dict)]
+    cursor = None
+    for p in payloads:
+        ts = p.get("timestamp")
+        if ts and (cursor is None or ts > cursor):
+            cursor = ts
+    return CollectResult(payloads=payloads, cursor=cursor, detail=f"pulled {len(payloads)} alerts")
+
+
+class CrowdStrikeCollector:
+    vendor = "crowdstrike"
+    source = "crowdstrike"
+
+    def __init__(self, credentials: dict[str, Any], *, timeout: float = 20.0):
+        self._id = credentials.get("client_id", "")
+        self._secret = credentials.get("client_secret", "")
+        self._timeout = timeout
+
+    async def _authenticate(self, client: httpx.AsyncClient, base: str) -> str:
+        resp = await client.post(
+            f"{base}/oauth2/token",
+            data={"client_id": self._id, "client_secret": self._secret},
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+
+    async def collect(
+        self, connector: Connector, cursor: str | None, since: str, *, limit: int
+    ) -> CollectResult:
+        base = connector.endpoint_url.rstrip("/")
+        flt = build_alert_filter(cursor, since)
+        async with httpx.AsyncClient(verify=connector.verify_tls, timeout=self._timeout) as client:
+            headers = {"Authorization": f"Bearer {await self._authenticate(client, base)}"}
+            # 1) query the composite IDs of new alerts, oldest first
+            q = await client.get(
+                f"{base}/alerts/queries/alerts/v2",
+                headers=headers,
+                params={"filter": flt, "sort": "timestamp|asc", "limit": limit},
+            )
+            q.raise_for_status()
+            ids = q.json().get("resources") or []
+            if not ids:
+                return CollectResult(payloads=[], cursor=None, detail="no new alerts")
+            # 2) hydrate them into full alert resources
+            h = await client.post(
+                f"{base}/alerts/entities/alerts/v2", headers=headers, json={"composite_ids": ids}
+            )
+            h.raise_for_status()
+        return parse_crowdstrike_alerts(h.json())
+
+
 # vendor -> factory(credentials) -> Collector. A vendor is pollable only if it
 # appears here AND has a normalizer registered for its `source`.
 _COLLECTORS: dict[str, Any] = {
     WazuhCollector.vendor: WazuhCollector,
+    CrowdStrikeCollector.vendor: CrowdStrikeCollector,
 }
 
 

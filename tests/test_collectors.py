@@ -1,6 +1,12 @@
 """Collector query/parse logic — the pure parts, no live indexer."""
 
-from argus.connectors.collectors import build_wazuh_query, get_collector, parse_wazuh_hits
+from argus.connectors.collectors import (
+    build_alert_filter,
+    build_wazuh_query,
+    get_collector,
+    parse_crowdstrike_alerts,
+    parse_wazuh_hits,
+)
 
 
 def test_query_uses_cursor_when_present():
@@ -37,6 +43,31 @@ def test_parse_empty_leaves_cursor_none():
     assert result.cursor is None
 
 
-def test_unknown_vendor_has_no_collector():
-    assert get_collector("crowdstrike", {}) is None
+def test_both_shipped_vendors_have_collectors():
     assert get_collector("wazuh", {"username": "u", "password": "p"}) is not None
+    assert get_collector("crowdstrike", {"client_id": "i", "client_secret": "s"}) is not None
+    assert get_collector("sentinel", {}) is None  # planned, no collector yet
+
+
+def test_crowdstrike_filter_uses_cursor_then_since():
+    assert build_alert_filter("2026-07-19T10:00:00Z", "x") == "timestamp:>'2026-07-19T10:00:00Z'"
+    assert build_alert_filter(None, "2026-07-19T09:00:00Z") == "timestamp:>'2026-07-19T09:00:00Z'"
+
+
+def test_crowdstrike_parse_extracts_alerts_and_max_cursor():
+    body = {
+        "resources": [
+            {"composite_id": "a", "timestamp": "2026-07-19T10:00:01Z"},
+            {"composite_id": "b", "timestamp": "2026-07-19T10:00:04Z"},
+            {"composite_id": "c", "timestamp": "2026-07-19T10:00:02Z"},
+        ]
+    }
+    result = parse_crowdstrike_alerts(body)
+    assert len(result.payloads) == 3
+    assert result.cursor == "2026-07-19T10:00:04Z"
+
+
+def test_crowdstrike_parse_empty_is_a_noop():
+    result = parse_crowdstrike_alerts({"resources": []})
+    assert result.payloads == []
+    assert result.cursor is None

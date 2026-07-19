@@ -39,6 +39,21 @@ _WAZUH_MAPPING = {
     "rule.mitre.id": "mitre_technique_ids",
 }
 
+# Mirrors CrowdStrikeNormalizer — Falcon already resolves ATT&CK, so
+# technique_id flows straight into mitre_technique_ids.
+_CROWDSTRIKE_MAPPING = {
+    "timestamp": "event_time",
+    "tactic": "category",
+    "description": "action",
+    "severity": "severity",
+    "device.hostname": "host_name",
+    "user_name": "user_name",
+    "device.external_ip": "src_ip",
+    "technique_id": "mitre_technique_ids",
+    "cmdline": "command_line",
+    "filename": "process_image",
+}
+
 CATALOG: list[dict[str, Any]] = [
     {
         "vendor": "wazuh",
@@ -58,8 +73,11 @@ CATALOG: list[dict[str, Any]] = [
     {
         "vendor": "crowdstrike",
         "name": "CrowdStrike Falcon",
-        "description": "Falcon detections via the streaming API.",
-        "supported": False,
+        "description": "Pull Falcon detections via the OAuth2 Alerts API.",
+        "supported": True,
+        "endpoint_hint": "https://api.crowdstrike.com",
+        "credential_fields": ["client_id", "client_secret"],
+        "default_mapping": _CROWDSTRIKE_MAPPING,
     },
     {
         "vendor": "sentinel",
@@ -93,9 +111,18 @@ _SUPPORTED = {c["vendor"] for c in CATALOG if c["supported"]}
 async def probe_connector(
     vendor: str, endpoint_url: str, credentials: dict[str, Any], verify_tls: bool
 ) -> tuple[bool, str]:
-    """Live connection test. Wazuh: hit the indexer's _cluster/health."""
-    if vendor != "wazuh":
-        return False, f"no collector shipped for vendor '{vendor}' yet"
+    """Live connection test, dispatched per vendor."""
+    if vendor == "wazuh":
+        return await _probe_wazuh(endpoint_url, credentials, verify_tls)
+    if vendor == "crowdstrike":
+        return await _probe_crowdstrike(endpoint_url, credentials, verify_tls)
+    return False, f"no collector shipped for vendor '{vendor}' yet"
+
+
+async def _probe_wazuh(
+    endpoint_url: str, credentials: dict[str, Any], verify_tls: bool
+) -> tuple[bool, str]:
+    """Hit the Wazuh Indexer's _cluster/health."""
     url = endpoint_url.rstrip("/") + "/_cluster/health"
     auth = (credentials.get("username", ""), credentials.get("password", ""))
     try:
@@ -112,6 +139,31 @@ async def probe_connector(
         return True, f"cluster '{body.get('cluster_name', '?')}' is {body.get('status', '?')}"
     except ValueError:
         return False, "the endpoint answered, but not like an OpenSearch indexer"
+
+
+async def _probe_crowdstrike(
+    endpoint_url: str, credentials: dict[str, Any], verify_tls: bool
+) -> tuple[bool, str]:
+    """Exchange the API client credentials for a token — proves auth works."""
+    url = endpoint_url.rstrip("/") + "/oauth2/token"
+    data = {
+        "client_id": credentials.get("client_id", ""),
+        "client_secret": credentials.get("client_secret", ""),
+    }
+    try:
+        async with httpx.AsyncClient(verify=verify_tls, timeout=6.0) as client:
+            resp = await client.post(url, data=data)
+    except httpx.HTTPError as e:
+        return False, f"could not reach Falcon: {e.__class__.__name__}: {e}"
+    if resp.status_code in (401, 403):
+        return False, "Falcon rejected those API credentials"
+    if resp.status_code not in (200, 201):
+        return False, f"Falcon answered HTTP {resp.status_code}"
+    try:
+        token = resp.json().get("access_token")
+    except ValueError:
+        return False, "the endpoint answered, but not like the Falcon OAuth2 API"
+    return (True, "authenticated with Falcon") if token else (False, "no access token returned")
 
 
 class ConnectorOut(BaseModel):
