@@ -29,6 +29,28 @@ log = structlog.get_logger()
 _ENTITY_TYPES = ("ip", "hash", "domain", "url")
 _CONCURRENCY = 4  # indicators in flight; per-indicator providers stay sequential
 
+# Thresholds separating a real HUNT LEAD from "merely seen before". Applied
+# only to the reputation-scored feeds whose found=True fires on trivial
+# signal: a single VirusTotal engine flagging a well-known CDN is almost
+# always a false positive, and any stray AbuseIPDB report leaves confidence
+# at 0. Curated feeds (abuse.ch ThreatFox/URLhaus/MalwareBazaar, CISA KEV)
+# stay lead-worthy on found alone — a hit there is already a real IOC.
+_MIN_VT_ENGINES = 2
+_MIN_ABUSE_CONFIDENCE = 25
+
+
+def _is_lead(f: CTIFinding) -> bool:
+    """Is this finding strong enough to surface / persist as a standing lead?"""
+    if not f.found:
+        return False
+    if f.provider == "virustotal":
+        stats = (f.raw or {}).get("stats", {})
+        flagged = int(stats.get("malicious", 0)) + int(stats.get("suspicious", 0))
+        return flagged >= _MIN_VT_ENGINES
+    if f.provider == "abuseipdb":
+        return (f.confidence or 0) >= _MIN_ABUSE_CONFIDENCE
+    return True
+
 
 def _is_public_ip(value: str) -> bool:
     try:
@@ -108,9 +130,9 @@ async def hunt_indicators(tenant_id: uuid.UUID, limit: int = 40) -> HuntResult:
             except Exception as exc:  # noqa: BLE001 - one indicator never kills the sweep
                 log.warning("cti_hunt_indicator_failed", indicator=value, error=str(exc)[:200])
                 return
-        flagged = [f for f in findings if f.found]
-        if flagged:
-            hits.append(HuntHit(itype, value, local_events, flagged))
+        leads = [f for f in findings if _is_lead(f)]
+        if leads:
+            hits.append(HuntHit(itype, value, local_events, leads))
 
     await asyncio.gather(*(check(t, v, n) for t, v, n in indicators))
 
