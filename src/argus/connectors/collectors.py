@@ -230,12 +230,20 @@ def _iso_to_ms(iso: str) -> int:
 def build_cortex_filters(cursor: str | None, since: str, limit: int) -> dict[str, Any]:
     """Cortex request_data: alerts at/after the resume point, oldest first.
 
-    Cortex's creation_time is epoch milliseconds and its operators are gte/lte
-    (no strict >), so the cursor is stored as max(creation_time)+1 ms — gte on
-    that never re-pulls the boundary alert. `since` (ISO, now - lookback)
-    bounds the first poll and is converted to ms here.
+    Cortex's creation_time is epoch ms and its only operator is gte, so — like
+    CrowdStrike — we gte the boundary and let the parser skip the alert_ids
+    already ingested at that exact millisecond (the {ts, ids} skip-set). This
+    is drop-free even when a limit-truncated batch splits a same-ms cluster,
+    which the earlier max+1 idiom could not survive. `since` (ISO, now -
+    lookback) bounds the first poll; a legacy plain-int cursor still resumes.
     """
-    lower = int(cursor) if cursor else _iso_to_ms(since)
+    boundary = _decode_boundary(cursor)
+    if boundary and boundary.get("ts") is not None:
+        lower = int(boundary["ts"])
+    elif cursor:
+        lower = int(cursor)  # legacy max+1 cursor
+    else:
+        lower = _iso_to_ms(since)
     return {
         "request_data": {
             "filters": [{"field": "creation_time", "operator": "gte", "value": lower}],
@@ -246,16 +254,39 @@ def build_cortex_filters(cursor: str | None, since: str, limit: int) -> dict[str
     }
 
 
-def parse_cortex_alerts(body: dict[str, Any]) -> CollectResult:
-    """Extract alerts and advance the cursor to max(creation_time)+1 ms."""
-    alerts = (body.get("reply") or {}).get("alerts") or []
-    payloads = [a for a in alerts if isinstance(a, dict)]
+def parse_cortex_alerts(body: dict[str, Any], prev_cursor: str | None = None) -> CollectResult:
+    """Alerts minus the alert_ids already ingested at the prior boundary ms.
+
+    New cursor = {ts: max creation_time, ids: every alert_id at it} (the id set
+    accumulating across polls parked on one boundary), so a later gte re-fetch
+    skips them — no drops, no duplicates. Mirrors the CrowdStrike collector.
+    """
+    prev = _decode_boundary(prev_cursor) or {}
+    seen = set(prev.get("ids") or [])
+    prev_ts = prev.get("ts")
+
+    payloads: list[dict[str, Any]] = []
     max_ms: int | None = None
-    for a in payloads:
-        ct = a.get("creation_time")
-        if isinstance(ct, (int, float)) and (max_ms is None or ct > max_ms):
-            max_ms = int(ct)
-    cursor = str(max_ms + 1) if max_ms is not None else None
+    ids_at_max: list[str] = []
+    for a in (body.get("reply") or {}).get("alerts") or []:
+        if not isinstance(a, dict) or a.get("alert_id") in seen:
+            continue  # already ingested at the previous boundary timestamp
+        payloads.append(a)
+        ct, aid = a.get("creation_time"), a.get("alert_id")
+        if not isinstance(ct, (int, float)):
+            continue
+        ct = int(ct)
+        if max_ms is None or ct > max_ms:
+            max_ms, ids_at_max = ct, [aid]
+        elif ct == max_ms:
+            ids_at_max.append(aid)
+
+    cursor = None
+    if max_ms is not None:
+        ids = set(ids_at_max)
+        if prev_ts == max_ms:
+            ids |= seen
+        cursor = json.dumps({"ts": max_ms, "ids": sorted(i for i in ids if i)})
     return CollectResult(payloads=payloads, cursor=cursor, detail=f"pulled {len(payloads)} alerts")
 
 
@@ -277,7 +308,7 @@ class CortexXdrCollector:
         async with httpx.AsyncClient(verify=connector.verify_tls, timeout=self._timeout) as client:
             resp = await client.post(url, headers=headers, json=body)
         resp.raise_for_status()
-        return parse_cortex_alerts(resp.json())
+        return parse_cortex_alerts(resp.json(), cursor)
 
 
 # vendor -> factory(credentials) -> Collector. A vendor is pollable only if it

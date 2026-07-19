@@ -122,26 +122,47 @@ def test_crowdstrike_parse_empty_is_a_noop():
     assert result.cursor is None
 
 
-def test_cortex_filter_uses_cursor_as_int_and_since_as_ms():
-    q = build_cortex_filters("1700000000000", "x", 50)
-    assert q["request_data"]["filters"][0] == {
-        "field": "creation_time", "operator": "gte", "value": 1700000000000,
-    }
+def test_cortex_first_run_converts_iso_since_to_ms():
+    q = build_cortex_filters(None, "2026-07-19T00:00:00Z", 10)
+    f = q["request_data"]["filters"][0]
+    assert f == {"field": "creation_time", "operator": "gte", "value": 1784419200000}
     assert q["request_data"]["sort"] == {"field": "creation_time", "keyword": "asc"}
-    # first run: ISO `since` is converted to epoch ms
-    q2 = build_cortex_filters(None, "2026-07-19T00:00:00Z", 10)
-    assert q2["request_data"]["filters"][0]["value"] == 1784419200000
 
 
-def test_cortex_parse_advances_cursor_past_max():
+def test_cortex_v2_cursor_and_legacy_int_both_gte():
+    def _lower(cursor):
+        return build_cortex_filters(cursor, "x", 50)["request_data"]["filters"][0]["value"]
+
+    assert _lower(json.dumps({"ts": 1700000003000, "ids": ["2"]})) == 1700000003000
+    assert _lower("1700000000000") == 1700000000000  # legacy max+1 integer cursor still resumes
+
+
+def test_cortex_parse_records_boundary_ids():
     body = {"reply": {"alerts": [
         {"alert_id": "1", "creation_time": 1700000001000},
         {"alert_id": "2", "creation_time": 1700000003000},
-        {"alert_id": "3", "creation_time": 1700000002000},
+        {"alert_id": "3", "creation_time": 1700000003000},
     ]}}
     result = parse_cortex_alerts(body)
     assert len(result.payloads) == 3
-    assert result.cursor == "1700000003001"  # max + 1 ms so gte never re-pulls it
+    assert json.loads(result.cursor) == {"ts": 1700000003000, "ids": ["2", "3"]}
+
+
+def test_cortex_boundary_truncation_does_not_drop_events():
+    """Same regression as CrowdStrike: a batch cut through a same-ms cluster no
+    longer drops the remainder (the old max+1 idiom did)."""
+    T = 1700000003000
+    r1 = parse_cortex_alerts({"reply": {"alerts": [
+        {"alert_id": "a", "creation_time": T}, {"alert_id": "b", "creation_time": T},
+    ]}})
+    assert [p["alert_id"] for p in r1.payloads] == ["a", "b"]
+    # gte T re-fetches a,b and now c fits -> a,b skipped, c ingested, ids accumulate
+    r2 = parse_cortex_alerts({"reply": {"alerts": [
+        {"alert_id": "a", "creation_time": T}, {"alert_id": "b", "creation_time": T},
+        {"alert_id": "c", "creation_time": T},
+    ]}}, r1.cursor)
+    assert [p["alert_id"] for p in r2.payloads] == ["c"]
+    assert json.loads(r2.cursor) == {"ts": T, "ids": ["a", "b", "c"]}
 
 
 def test_cortex_parse_empty_is_a_noop():
