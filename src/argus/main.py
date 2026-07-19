@@ -17,7 +17,7 @@ from argus.api.v1.router import api_router
 from argus.core.config import get_settings
 from argus.core.logging import configure_logging
 from argus.infrastructure.db.session import dispose_engine
-from argus.services import auto_hunt
+from argus.services import auto_hunt, connector_runtime
 
 log = structlog.get_logger()
 
@@ -28,7 +28,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings.log_level)
     log.info("startup", env=settings.env)
     auto_hunt.start()
+    connector_runtime.start()
     yield
+    await connector_runtime.stop()
     await auto_hunt.stop()
     await dispose_engine()
     log.info("shutdown")

@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     auto_hunt_stagger_seconds: float = 5.0  # gap between tenants in one sweep
     auto_hunt_limit: int = 40  # indicators checked per tenant per sweep
 
+    # Connector runtime (services/connector_runtime.py): polls each enabled
+    # connector on a timer, pulling new events since its cursor and feeding
+    # them through the normal ingest path. A fresh connector's first poll is
+    # bounded to the last `initial_lookback_minutes` so it never drags in
+    # years of history.
+    connector_runtime_enabled: bool = True
+    connector_poll_interval_seconds: float = 60.0
+    connector_startup_delay_seconds: float = 15.0
+    connector_initial_lookback_minutes: int = 60
+    connector_batch_size: int = 500
+
     # Reasoning (LLM). Ollama is the local, private, free default; Anthropic
     # is an optional drop-in used only when an API key is configured.
     reasoning_provider: str = "ollama"

@@ -17,9 +17,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from argus.api.deps import CurrentUser, get_current_user
+from argus.connectors.collectors import is_pollable
 from argus.core.crypto import decrypt_credentials, encrypt_credentials
 from argus.infrastructure.db.models import Connector
 from argus.infrastructure.db.session import tenant_session
+from argus.services.connector_runtime import poll_connector
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 
@@ -120,8 +122,11 @@ class ConnectorOut(BaseModel):
     verify_tls: bool
     field_mapping: dict[str, Any]
     status: str
+    enabled: bool
     last_checked_at: datetime | None
     last_error: str | None
+    last_run_at: datetime | None
+    last_ingested: int
     created_at: datetime
     updated_at: datetime
 
@@ -139,6 +144,7 @@ class ConnectorCreateIn(BaseModel):
     credentials: dict[str, str] = Field(default_factory=dict)
     verify_tls: bool = True
     field_mapping: dict[str, str] | None = None
+    enabled: bool = True
 
 
 class ConnectorUpdateIn(BaseModel):
@@ -147,6 +153,7 @@ class ConnectorUpdateIn(BaseModel):
     credentials: dict[str, str] | None = None
     verify_tls: bool | None = None
     field_mapping: dict[str, str] | None = None
+    enabled: bool | None = None
 
 
 class TestDraftIn(BaseModel):
@@ -210,6 +217,7 @@ async def create_connector(
             credentials=encrypt_credentials(body.credentials),
             verify_tls=body.verify_tls,
             field_mapping=body.field_mapping or default_mapping,
+            enabled=body.enabled,
         )
         s.add(connector)
         await s.flush()
@@ -245,6 +253,28 @@ async def test_connector(
         return ConnectorOut.model_validate(connector)
 
 
+@router.post("/{connector_id}/poll", response_model=ConnectorOut)
+async def poll_now(
+    connector_id: int,
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> ConnectorOut:
+    """Pull events from this connector right now (the UI 'sync now' action).
+
+    Runs the same poll the runtime runs on its timer — fetch since the
+    cursor, ingest, advance — then returns the refreshed connector so the
+    caller sees last_run_at / last_ingested / status without another round
+    trip. Operational failures (unreachable, auth) surface as status=error
+    on the connector, not as a 5xx."""
+    async with tenant_session(current.tenant_id) as s:
+        connector = await _get_connector(s, connector_id)
+        if not is_pollable(connector.vendor):
+            raise HTTPException(400, f"vendor '{connector.vendor}' cannot be polled yet")
+    await poll_connector(current.tenant_id, connector_id)
+    async with tenant_session(current.tenant_id) as s:
+        connector = await _get_connector(s, connector_id)
+        return ConnectorOut.model_validate(connector)
+
+
 @router.patch("/{connector_id}", response_model=ConnectorOut)
 async def update_connector(
     connector_id: int,
@@ -253,7 +283,9 @@ async def update_connector(
 ) -> ConnectorOut:
     async with tenant_session(current.tenant_id) as s:
         connector = await _get_connector(s, connector_id)
-        for field in ("name", "endpoint_url", "credentials", "verify_tls", "field_mapping"):
+        for field in (
+            "name", "endpoint_url", "credentials", "verify_tls", "field_mapping", "enabled",
+        ):
             value = getattr(body, field)
             if value is not None:
                 if field == "credentials":

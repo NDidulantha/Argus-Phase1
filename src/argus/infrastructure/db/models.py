@@ -450,6 +450,15 @@ class Connector(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Runtime polling state (services/connector_runtime.py). enabled gates
+    # whether the runtime polls this connector; cursor is the opaque per-vendor
+    # resume token (Wazuh: last @timestamp seen).
+    enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    last_ingested: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
