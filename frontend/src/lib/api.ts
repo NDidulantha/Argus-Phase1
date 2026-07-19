@@ -535,8 +535,11 @@ export interface Connector {
   verify_tls: boolean
   field_mapping: Record<string, string>
   status: 'unconfigured' | 'healthy' | 'error'
+  enabled: boolean
   last_checked_at: string | null
   last_error: string | null
+  last_run_at: string | null
+  last_ingested: number
   created_at: string
   updated_at: string
 }
@@ -575,6 +578,16 @@ export function createConnector(token: string, draft: ConnectorDraft) {
 
 export function testConnector(token: string, id: number) {
   return request<Connector>(`/connectors/${id}/test`, jsonInit(token, 'POST', {}))
+}
+
+// Pull events from this connector now — the runtime's timed poll, on demand.
+export function pollConnector(token: string, id: number) {
+  return request<Connector>(`/connectors/${id}/poll`, jsonInit(token, 'POST', {}))
+}
+
+// Pause / resume the runtime for one connector without deleting it.
+export function setConnectorEnabled(token: string, id: number, enabled: boolean) {
+  return request<Connector>(`/connectors/${id}`, jsonInit(token, 'PATCH', { enabled }))
 }
 
 export async function deleteConnector(token: string, id: number): Promise<void> {

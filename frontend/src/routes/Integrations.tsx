@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plug, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import { DownloadCloud, Plug, Plus, Power, RefreshCw, Trash2, X } from 'lucide-react'
 import { ArgusMark } from '../components/ArgusMark'
 import { useAuth } from '../context/AuthContext'
 import { useAuthedQuery } from '../hooks/useAuthedQuery'
@@ -28,6 +28,15 @@ export function Integrations() {
 
   const runTest = useMutation({
     mutationFn: (id: number) => api.testConnector(token!, id),
+    onSuccess: invalidate,
+  })
+  const poll = useMutation({
+    mutationFn: (id: number) => api.pollConnector(token!, id),
+    onSuccess: invalidate,
+  })
+  const toggle = useMutation({
+    mutationFn: (vars: { id: number; enabled: boolean }) =>
+      api.setConnectorEnabled(token!, vars.id, vars.enabled),
     onSuccess: invalidate,
   })
   const remove = useMutation({
@@ -71,19 +80,26 @@ export function Integrations() {
             return (
               <div
                 key={c.id}
-                className={`rounded-card border-[0.5px] bg-elevated p-4 ${
+                className={`rounded-card border-[0.5px] bg-elevated p-4 transition-opacity duration-120 ${
                   c.status === 'healthy' ? 'border-accent/40 border-t-accent' : 'border-subtle'
-                }`}
+                } ${c.enabled ? '' : 'opacity-60'}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="truncate text-card-title">{c.name}</div>
                     <div className="text-label text-tertiary">{c.vendor}</div>
                   </div>
-                  <span className={`flex items-center gap-1.5 text-label ${style.text}`}>
-                    <span className={`h-1.5 w-1.5 rounded-full ${style.dot}`} />
-                    {style.label}
-                  </span>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span className={`flex items-center gap-1.5 text-label ${style.text}`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${style.dot}`} />
+                      {style.label}
+                    </span>
+                    {!c.enabled && (
+                      <span className="rounded-full border-[0.5px] border-strong px-1.5 py-0.5 text-[10px] leading-3 text-tertiary">
+                        paused
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="mt-2 truncate font-mono text-data text-secondary">
                   {c.endpoint_url}
@@ -92,22 +108,50 @@ export function Integrations() {
                   last check:{' '}
                   {c.last_checked_at ? formatUtcDateTime(c.last_checked_at) : 'never'}
                 </div>
+                <div className="mt-0.5 font-mono text-[11px] leading-4 text-tertiary">
+                  last poll: {c.last_run_at ? formatUtcDateTime(c.last_run_at) : 'never'}
+                  {c.last_run_at &&
+                    ` · ${c.last_ingested} event${c.last_ingested === 1 ? '' : 's'}`}
+                </div>
                 {c.last_error && (
                   <p className="mt-2 text-[11px] leading-4 text-sev-critical">{c.last_error}</p>
                 )}
-                <div className="mt-3 flex gap-2">
+                <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => runTest.mutate(c.id)}
-                    disabled={runTest.isPending}
+                    disabled={runTest.isPending && runTest.variables === c.id}
                     className="flex items-center gap-1.5 rounded-control border-[0.5px] border-subtle px-2.5 py-1 text-label text-secondary transition-colors duration-120 hover:bg-hover hover:text-primary disabled:opacity-60"
                   >
                     <RefreshCw
                       size={11}
                       strokeWidth={1.5}
-                      className={runTest.isPending ? 'animate-scan-ring' : ''}
+                      className={runTest.isPending && runTest.variables === c.id ? 'animate-scan-ring' : ''}
                     />
                     Test
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => poll.mutate(c.id)}
+                    disabled={!c.enabled || (poll.isPending && poll.variables === c.id)}
+                    title={c.enabled ? 'Pull new events now' : 'Resume the connector to poll it'}
+                    className="flex items-center gap-1.5 rounded-control border-[0.5px] border-subtle px-2.5 py-1 text-label text-secondary transition-colors duration-120 hover:bg-hover hover:text-primary disabled:opacity-60"
+                  >
+                    <DownloadCloud
+                      size={11}
+                      strokeWidth={1.5}
+                      className={poll.isPending && poll.variables === c.id ? 'animate-scan-ring' : ''}
+                    />
+                    {poll.isPending && poll.variables === c.id ? 'Syncing…' : 'Sync now'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggle.mutate({ id: c.id, enabled: !c.enabled })}
+                    disabled={toggle.isPending && toggle.variables?.id === c.id}
+                    className="flex items-center gap-1.5 rounded-control border-[0.5px] border-subtle px-2.5 py-1 text-label text-secondary transition-colors duration-120 hover:bg-hover hover:text-primary disabled:opacity-60"
+                  >
+                    <Power size={11} strokeWidth={1.5} />
+                    {c.enabled ? 'Pause' : 'Resume'}
                   </button>
                   <button
                     type="button"
