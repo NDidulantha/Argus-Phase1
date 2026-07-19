@@ -13,14 +13,20 @@ idempotent (open objects are replaced; triaged ones are left alone and
 their clusters are not resurrected).
 
 Scoring model (fully transparent, see score_breakdown on each object):
-  base            = max technique confidence contribution
-  tactic_breadth  = +8 per distinct ATT&CK tactic (attack progresses)
-  technique_count = +4 per distinct technique (capped)
-  critical_bonus  = +20 if a high-severity technique is present
+  base            = max technique confidence * 0.25   (<= 25)
+  tactic_breadth  = +6 per distinct ATT&CK tactic     (<= 30, caps at 5)
+  technique_count = +3 per distinct technique         (<= 18, caps at 6)
+  critical_bonus  = +20 if a high-severity tactic is present
                     (credential access, privilege escalation, lateral mvmt)
-  volume          = +min(10, events/20)
+  volume          = +min(10, events/100)
 Score is clamped to 0..100. Every term is recorded so an analyst can see
 exactly why an object scored as it did.
+
+The terms are budgeted so only a maximal intrusion (5+ tactics, 6+
+techniques, high confidence, critical tactic, thousands of events) can
+reach 100 — anything less lands strictly below, so evidence objects RANK.
+The original weights saturated: every real cluster on the APT29 evals
+scored exactly 100, from a 47-event blip to a 3k-event full intrusion.
 """
 
 import uuid
@@ -55,11 +61,11 @@ class _Cluster:
 
 
 def _score(techniques, tactics, event_count, max_conf) -> tuple[int, dict]:
-    base = round(max_conf * 0.4)
-    tactic_breadth = 8 * len(tactics)
-    technique_count = min(4 * len(techniques), 20)
+    base = round(max_conf * 0.25)
+    tactic_breadth = min(6 * len(tactics), 30)
+    technique_count = min(3 * len(techniques), 18)
     critical_bonus = 20 if (_CRITICAL_TACTICS & set(tactics)) else 0
-    volume = min(10, event_count // 20)
+    volume = min(10, event_count // 100)
     total = base + tactic_breadth + technique_count + critical_bonus + volume
     total = max(0, min(100, total))
     breakdown = {

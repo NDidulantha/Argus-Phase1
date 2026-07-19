@@ -9,6 +9,7 @@ the open evidence objects. Vendor-sourced tags are never touched.
 Usage:
   uv run python scripts/reclassify.py --tenant apt29v2
   uv run python scripts/reclassify.py --tenant apt29v2 --skip-correlate
+  uv run python scripts/reclassify.py --tenant apt29v2 --correlate-only
 """
 
 import argparse
@@ -28,7 +29,7 @@ from argus.services.technique_rules import classify
 BATCH = 10_000
 
 
-async def run(slug: str, skip_correlate: bool) -> int:
+async def run(slug: str, skip_correlate: bool, correlate_only: bool) -> int:
     async with admin_session() as s:
         tenant = await s.scalar(
             select(Tenant).where(or_(Tenant.slug == slug, Tenant.name == slug))
@@ -38,6 +39,13 @@ async def run(slug: str, skip_correlate: bool) -> int:
             return 1
         tenant_id = tenant.id
     print(f"tenant: {tenant.name} ({tenant_id})")
+
+    if correlate_only:
+        async with tenant_session(tenant_id) as s:
+            written = await correlate_tenant(s, tenant_id)
+        print(f"correlation: {written} open evidence objects rebuilt")
+        await dispose_engine()
+        return 0
 
     async with tenant_session(tenant_id) as s:
         result = await s.execute(
@@ -106,8 +114,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tenant", required=True, help="tenant slug or name")
     p.add_argument("--skip-correlate", action="store_true")
+    p.add_argument("--correlate-only", action="store_true", help="rebuild evidence, no re-tag")
     args = p.parse_args()
-    return asyncio.run(run(args.tenant, args.skip_correlate))
+    return asyncio.run(run(args.tenant, args.skip_correlate, args.correlate_only))
 
 
 if __name__ == "__main__":
