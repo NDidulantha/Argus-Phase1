@@ -120,3 +120,60 @@ async def test_hunt_sweep_flags_stored_indicators(client):
 
     # private IPs never burn provider quota
     assert all(h["value"] != "10.0.0.5" for h in d["hits"])
+
+
+async def test_hunt_persists_findings_and_upserts(client):
+    """A hunt writes durable leads; a repeat sweep updates, never duplicates."""
+    auth = await _auth(client)
+    await client.post("/api/v1/events", json={
+        "source": "securitydatasets",
+        "events": [_sysmon_with_ip(0), _sysmon_with_ip(5)],
+    }, headers=auth)
+
+    # findings list starts empty
+    r = await client.get("/api/v1/cti/hunt/findings", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["findings"] == []
+    assert r.json()["last_swept"] is None
+
+    await client.post("/api/v1/cti/hunt", headers=auth)
+    r = await client.get("/api/v1/cti/hunt/findings", headers=auth)
+    d = r.json()
+    assert len(d["findings"]) == 1
+    f = d["findings"][0]
+    assert f["value"] == "5.6.7.8"
+    assert f["provider"] == "faketi"
+    assert f["local_events"] == 2
+    assert f["finding"]["malware"] == ["Emotet"]
+    assert d["last_swept"] is not None
+    first_seen = f["first_seen"]
+
+    # a third sighting then a re-hunt: same row updated, not a new one
+    await client.post("/api/v1/events", json={
+        "source": "securitydatasets", "events": [_sysmon_with_ip(10)],
+    }, headers=auth)
+    await client.post("/api/v1/cti/hunt", headers=auth)
+    r = await client.get("/api/v1/cti/hunt/findings", headers=auth)
+    d = r.json()
+    assert len(d["findings"]) == 1  # upsert, not duplicate
+    assert d["findings"][0]["local_events"] == 3  # volume bumped
+    assert d["findings"][0]["first_seen"] == first_seen  # original discovery kept
+
+
+async def test_autonomous_sweep_persists_across_tenants(client):
+    """auto_hunt.sweep_once hunts every active tenant and stores what it finds
+    — the 'always on' path, with no analyst clicking anything."""
+    from argus.services import auto_hunt
+
+    auth = await _auth(client)
+    await client.post("/api/v1/events", json={
+        "source": "securitydatasets",
+        "events": [_sysmon_with_ip(0), _sysmon_with_ip(5)],
+    }, headers=auth)
+
+    written = await auto_hunt.sweep_once()
+    assert written >= 1
+
+    r = await client.get("/api/v1/cti/hunt/findings", headers=auth)
+    d = r.json()
+    assert any(f["value"] == "5.6.7.8" for f in d["findings"])

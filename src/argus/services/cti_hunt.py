@@ -13,12 +13,14 @@ import asyncio
 import ipaddress
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from argus.domain.cti import CTIFinding
-from argus.infrastructure.db.models import Entity, NormalizedEvent
+from argus.infrastructure.db.models import Entity, HuntFinding, NormalizedEvent
 from argus.infrastructure.db.session import tenant_session
 from argus.services.cti import lookup_cti_tenant
 
@@ -120,3 +122,56 @@ async def hunt_indicators(tenant_id: uuid.UUID, limit: int = 40) -> HuntResult:
         hits=len(hits),
     )
     return HuntResult(indicators_checked=len(indicators), hits=hits)
+
+
+async def persist_hits(tenant_id: uuid.UUID, hits: list[HuntHit]) -> int:
+    """Upsert hunt hits into hunt_findings, one row per (indicator, provider).
+
+    Idempotent: a re-flagged indicator bumps last_seen / confidence / local
+    volume rather than duplicating (uq_hunt_finding). Returns rows written.
+    Used by both the autonomous sweep and the manual POST /cti/hunt so a
+    finding is durable the moment it is discovered.
+    """
+    now = datetime.now(UTC)
+    written = 0
+    async with tenant_session(tenant_id) as s:
+        for hit in hits:
+            for f in hit.findings:
+                await s.execute(
+                    pg_insert(HuntFinding)
+                    .values(
+                        tenant_id=tenant_id,
+                        indicator_type=hit.indicator_type,
+                        value=hit.value,
+                        provider=f.provider,
+                        confidence=f.confidence or 0,
+                        local_events=hit.local_events,
+                        finding={
+                            "summary": f.summary,
+                            "reference_url": f.reference_url,
+                            "malware": f.malware,
+                            "threat_actors": f.threat_actors,
+                            "tags": f.tags,
+                            "details": f.details,
+                        },
+                        last_seen=now,
+                    )
+                    .on_conflict_do_update(
+                        constraint="uq_hunt_finding",
+                        set_={
+                            "confidence": f.confidence or 0,
+                            "local_events": hit.local_events,
+                            "finding": {
+                                "summary": f.summary,
+                                "reference_url": f.reference_url,
+                                "malware": f.malware,
+                                "threat_actors": f.threat_actors,
+                                "tags": f.tags,
+                                "details": f.details,
+                            },
+                            "last_seen": now,
+                        },
+                    )
+                )
+                written += 1
+    return written

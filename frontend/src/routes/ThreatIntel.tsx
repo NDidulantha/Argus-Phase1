@@ -1,11 +1,20 @@
 import { useState, type FormEvent } from 'react'
-import { useMutation } from '@tanstack/react-query'
-import { Crosshair, ExternalLink, Search } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { Crosshair, ExternalLink, Radar, Search } from 'lucide-react'
 import { ArgusMark } from '../components/ArgusMark'
 import { useAuth } from '../context/AuthContext'
 import * as api from '../lib/api'
-import type { CTIFinding, CTILookup, IndicatorType } from '../lib/api'
+import type { CTIFinding, CTIHuntFinding, CTILookup, IndicatorType } from '../lib/api'
 import { formatCount } from '../lib/format'
+
+// "3 minutes ago" style relative time for the autonomous hunter's last sweep.
+function relativeTime(iso: string): string {
+  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  if (secs < 90) return 'just now'
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`
+  return `${Math.round(secs / 86400)}d ago`
+}
 
 const TYPES: { value: IndicatorType; label: string; placeholder: string }[] = [
   { value: 'ip', label: 'IP', placeholder: '185.220.101.42' },
@@ -214,6 +223,57 @@ function FindingCard({ finding: f }: { finding: CTIFinding }) {
   )
 }
 
+// A single standing lead from the autonomous hunter. Clicking opens the full
+// live lookup for the indicator (same pivot as the manual hunt rows).
+function AutoHuntRow({
+  finding,
+  onOpen,
+}: {
+  finding: CTIHuntFinding
+  onOpen: () => void
+}) {
+  const summary = finding.finding.summary
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title="Open full lookup"
+      className="flex w-full items-start gap-3 rounded-control border-[0.5px] border-subtle bg-base px-3 py-2 text-left transition-colors duration-120 hover:bg-hover"
+    >
+      <span
+        className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
+        style={{ background: scoreColor(finding.confidence) }}
+      />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <span className="min-w-0 truncate font-mono text-data text-primary">
+            {finding.value}
+          </span>
+          <span className="shrink-0 rounded-full border-[0.5px] border-subtle px-2 py-0.5 text-[11px] leading-4 text-secondary">
+            {finding.indicator_type}
+          </span>
+        </span>
+        {summary && (
+          <span className="mt-0.5 block truncate text-[11px] leading-4 text-tertiary">
+            {summary}
+          </span>
+        )}
+      </span>
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        <span
+          className="font-mono text-[11px] leading-4"
+          style={{ color: scoreColor(finding.confidence) }}
+        >
+          {finding.confidence}/100
+        </span>
+        <span className="text-[11px] leading-4 text-tertiary">
+          {finding.provider} · {formatCount(finding.local_events)} events
+        </span>
+      </span>
+    </button>
+  )
+}
+
 export function ThreatIntel() {
   const { token } = useAuth()
   const [type, setType] = useState<IndicatorType>('ip')
@@ -224,7 +284,19 @@ export function ThreatIntel() {
     mutationFn: ({ t, v }: { t: IndicatorType; v: string }) => api.ctiLookup(token!, t, v),
     onSuccess: setResult,
   })
-  const hunt = useMutation({ mutationFn: () => api.ctiHunt(token!, 60) })
+  // Durable leads from the autonomous hunter — present the moment the screen
+  // opens, no click required. Polls slowly so a background sweep that lands
+  // while the analyst is on this page appears on its own.
+  const autoHunt = useQuery({
+    queryKey: ['cti-hunt-findings'],
+    queryFn: () => api.ctiHuntFindings(token!, 100),
+    enabled: !!token,
+    refetchInterval: 60_000,
+  })
+  const hunt = useMutation({
+    mutationFn: () => api.ctiHunt(token!, 60),
+    onSuccess: () => autoHunt.refetch(),
+  })
 
   function runLookup(t: IndicatorType, v: string) {
     setType(t)
@@ -341,6 +413,48 @@ export function ThreatIntel() {
           ))}
         </div>
       )}
+
+      <section className="max-w-2xl rounded-card border-[0.5px] border-accent/30 bg-accent-bg/20 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-card-title">
+              <Radar
+                size={14}
+                strokeWidth={1.5}
+                className={`text-accent ${autoHunt.isFetching ? 'animate-pulse' : ''}`}
+              />
+              Autonomous hunter
+            </h2>
+            <p className="mt-1 text-label text-secondary">
+              Runs on its own timer across every tenant, re-checking your indicators as threat
+              intel changes. These are leads it surfaced while nobody was watching.
+            </p>
+          </div>
+          <span className="shrink-0 text-[11px] leading-4 text-tertiary">
+            {autoHunt.data?.last_swept
+              ? `swept ${relativeTime(autoHunt.data.last_swept)}`
+              : 'no sweep yet'}
+          </span>
+        </div>
+
+        {autoHunt.data && autoHunt.data.findings.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {autoHunt.data.findings.map((f) => (
+              <AutoHuntRow
+                key={`${f.provider}:${f.indicator_type}:${f.value}`}
+                finding={f}
+                onOpen={() => runLookup(f.indicator_type, f.value)}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-label text-tertiary">
+            {autoHunt.isLoading
+              ? 'Loading standing leads…'
+              : 'No standing leads yet — the hunter has not flagged anything in your data.'}
+          </p>
+        )}
+      </section>
 
       <section className="max-w-2xl rounded-card border-[0.5px] border-subtle bg-elevated p-4">
         <div className="flex items-center justify-between gap-3">

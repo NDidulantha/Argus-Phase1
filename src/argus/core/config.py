@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     auto_correlate_debounce_seconds: float = 10.0
     auto_correlate_window_minutes: int = 30
 
+    # Autonomous hunter: a timer-driven background sweep that runs every
+    # active tenant's own indicators through threat intel (services/auto_hunt.py)
+    # and persists the hits. Threat intel changes even when a tenant's events
+    # don't, so this keeps hunting while nobody is watching. Interval is
+    # deliberately slow to respect free-tier CTI rate limits (VirusTotal:
+    # 4 req/min); the sweep is cache-first so repeat passes are cheap.
+    auto_hunt_enabled: bool = True
+    auto_hunt_interval_seconds: float = 1800.0  # 30 min between full sweeps
+    auto_hunt_startup_delay_seconds: float = 60.0  # let the app settle first
+    auto_hunt_stagger_seconds: float = 5.0  # gap between tenants in one sweep
+    auto_hunt_limit: int = 40  # indicators checked per tenant per sweep
+
     # Reasoning (LLM). Ollama is the local, private, free default; Anthropic
     # is an optional drop-in used only when an API key is configured.
     reasoning_provider: str = "ollama"

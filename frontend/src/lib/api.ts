@@ -485,6 +485,38 @@ export function ctiHunt(token: string, limit = 40) {
   return request<CTIHunt>(`/cti/hunt?limit=${limit}`, jsonInit(token, 'POST', {}))
 }
 
+// Persisted output of the autonomous hunter (services/auto_hunt.py) — leads
+// found on a timer while nobody was watching, durable across sessions.
+export interface CTIHuntFinding {
+  indicator_type: IndicatorType
+  value: string
+  provider: string
+  confidence: number
+  local_events: number
+  status: string
+  first_seen: string
+  last_seen: string
+  finding: {
+    summary?: string | null
+    reference_url?: string | null
+    malware?: string[]
+    threat_actors?: string[]
+    tags?: string[]
+    details?: Record<string, string | number | boolean | string[]>
+  }
+}
+
+export interface CTIHuntFindings {
+  findings: CTIHuntFinding[]
+  last_swept: string | null
+}
+
+export function ctiHuntFindings(token: string, limit = 100) {
+  return request<CTIHuntFindings>(`/cti/hunt/findings?limit=${limit}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
 export interface ConnectorCatalogEntry {
   vendor: string
   name: string

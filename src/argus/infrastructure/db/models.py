@@ -295,6 +295,42 @@ class EvidenceObject(Base):
     )
 
 
+class HuntFinding(Base):
+    """A flagged indicator the autonomous hunter found in a tenant's own data
+    (services/auto_hunt.py). Separate from EvidenceObject on purpose: the
+    correlation pass deletes-and-rebuilds open evidence, which would wipe
+    these. Upsert-keyed on (tenant, indicator_type, value, provider) so a
+    re-flagged indicator bumps last_seen/confidence rather than duplicating.
+    Tenant-owned -> RLS."""
+
+    __tablename__ = "hunt_findings"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "indicator_type", "value", "provider", name="uq_hunt_finding"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    indicator_type: Mapped[str] = mapped_column(Text)
+    value: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
+    local_events: Mapped[int] = mapped_column(BigInteger, server_default=text("0"))
+    finding: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(Text, server_default=text("'open'"))
+    first_seen: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+
+
 class Case(Base):
     """An analyst investigation case: groups evidence objects under a title,
     severity, workflow status (new -> investigating -> contained -> resolved

@@ -10,10 +10,10 @@ from sqlalchemy import func, or_, select
 
 from argus.api.deps import CurrentUser, get_current_user
 from argus.cti.registry import get_cti_providers
-from argus.infrastructure.db.models import Entity, NormalizedEvent
+from argus.infrastructure.db.models import Entity, HuntFinding, NormalizedEvent
 from argus.infrastructure.db.session import tenant_session
 from argus.services.cti import lookup_cti_tenant
-from argus.services.cti_hunt import hunt_indicators
+from argus.services.cti_hunt import hunt_indicators, persist_hits
 
 router = APIRouter(prefix="/cti", tags=["cti"])
 
@@ -157,8 +157,12 @@ async def cti_hunt(
     """Sweep the tenant's own indicators (public IPs seen in events,
     ip/hash/domain/url entities) through every CTI provider and return the
     flagged ones — proactive hunting over data already ingested. Cache-first:
-    repeat sweeps only spend quota on indicators not seen in 24h."""
+    repeat sweeps only spend quota on indicators not seen in 24h. Hits are
+    persisted (hunt_findings) so a manual hunt and the autonomous sweep feed
+    the same durable lead list."""
     result = await hunt_indicators(current.tenant_id, limit)
+    if result.hits:
+        await persist_hits(current.tenant_id, result.hits)
     return HuntOut(
         indicators_checked=result.indicators_checked,
         hits=[
@@ -180,4 +184,65 @@ async def cti_hunt(
             )
             for h in result.hits
         ],
+    )
+
+
+class HuntFindingOut(BaseModel):
+    """A persisted lead from the autonomous hunter (or a past manual sweep)."""
+
+    indicator_type: str
+    value: str
+    provider: str
+    confidence: int
+    local_events: int
+    status: str
+    first_seen: str
+    last_seen: str
+    finding: dict[str, Any] = {}
+
+
+class HuntFindingsOut(BaseModel):
+    findings: list[HuntFindingOut]
+    last_swept: str | None
+
+
+@router.get("/hunt/findings", response_model=HuntFindingsOut)
+async def cti_hunt_findings(
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> HuntFindingsOut:
+    """The durable output of the autonomous hunter: indicators in the
+    tenant's own data that threat intel has flagged, most-confident first.
+    This is what makes the hunter 'always on' — leads found while nobody was
+    watching are here when the analyst returns."""
+    async with tenant_session(current.tenant_id) as s:
+        rows = (
+            await s.scalars(
+                select(HuntFinding)
+                .where(HuntFinding.status == "open")
+                .order_by(
+                    HuntFinding.confidence.desc(),
+                    HuntFinding.last_seen.desc(),
+                )
+                .limit(limit)
+            )
+        ).all()
+    findings = [
+        HuntFindingOut(
+            indicator_type=r.indicator_type,
+            value=r.value,
+            provider=r.provider,
+            confidence=r.confidence,
+            local_events=r.local_events,
+            status=r.status,
+            first_seen=r.first_seen.isoformat(),
+            last_seen=r.last_seen.isoformat(),
+            finding=r.finding or {},
+        )
+        for r in rows
+    ]
+    last_swept = max((r.last_seen for r in rows), default=None)
+    return HuntFindingsOut(
+        findings=findings,
+        last_swept=last_swept.isoformat() if last_swept else None,
     )
