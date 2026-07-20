@@ -29,6 +29,30 @@ export function Mitre() {
 
   const maxHits = Math.max(...hits.values(), 1)
 
+  // Trust tier per technique. 'only' = detected ONLY by the AI classifier — a
+  // review-grade hint, quarantined from alert scoring. 'augmented' = rules or
+  // vendor already confirmed it and AI merely added events. Rolled up to
+  // parent techniques like the hit counts.
+  const aiStatus = useMemo(() => {
+    const ai = new Map<string, number>()
+    const auth = new Map<string, number>()
+    const bump = (m: Map<string, number>, id: string, n: number) =>
+      m.set(id, (m.get(id) ?? 0) + n)
+    for (const c of coverage.data?.coverage ?? []) {
+      const aiN = c.sources.ai ?? 0
+      const authN = Object.entries(c.sources).reduce((s, [k, v]) => (k === 'ai' ? s : s + v), 0)
+      for (const id of new Set([c.technique_id, c.technique_id.split('.')[0]])) {
+        bump(ai, id, aiN)
+        bump(auth, id, authN)
+      }
+    }
+    const status = new Map<string, 'only' | 'augmented'>()
+    for (const [id, n] of ai) {
+      if (n > 0) status.set(id, (auth.get(id) ?? 0) > 0 ? 'augmented' : 'only')
+    }
+    return status
+  }, [coverage.data])
+
   const columns = useMemo(() => {
     if (!matrix.data) return []
     const byTactic = new Map<string, MatrixTechnique[]>()
@@ -67,12 +91,21 @@ export function Mitre() {
             </span>{' '}
             mapped events
             {Object.entries(coverage.data.by_source).map(([src, n]) => (
-              <span key={src} className="text-tertiary">
+              <span key={src} className={src === 'ai' ? 'text-(--sev-medium)' : 'text-tertiary'}>
                 {' '}
-                · {src}: <span className="font-mono">{formatCount(n)}</span>
+                · {src === 'ai' ? 'AI-inferred' : src}:{' '}
+                <span className="font-mono">{formatCount(n)}</span>
               </span>
             ))}
           </p>
+        )}
+        {(coverage.data?.by_source.ai ?? 0) > 0 && (
+          <span
+            title={AI_HINT}
+            className="flex items-center gap-1.5 text-[11px] leading-4 text-tertiary"
+          >
+            <AiBadge /> dashed = AI-inferred, review-grade (not scored)
+          </span>
         )}
       </div>
 
@@ -98,26 +131,42 @@ export function Mitre() {
                 <div className="space-y-1">
                   {col.techniques.map((t) => {
                     const count = hits.get(t.technique_id) ?? 0
-                    // emerald intensity = detection frequency (§4.7)
+                    const ai = aiStatus.get(t.technique_id)
+                    // emerald intensity = detection frequency (§4.7). AI-only
+                    // techniques are NOT confirmed detections, so they get no
+                    // emerald fill — a dashed amber outline marks them tentative.
                     const intensity =
                       count === 0 ? 0 : 0.1 + 0.3 * (Math.log1p(count) / Math.log1p(maxHits))
+                    const emerald = count > 0 && ai !== 'only'
                     return (
                       <button
                         key={`${col.tactic}-${t.technique_id}`}
                         type="button"
                         onClick={() => setSelected(t.technique_id)}
                         className={`w-full rounded-[6px] border-[0.5px] px-2 py-1.5 text-left transition-colors duration-120 hover:border-strong ${
-                          selected === t.technique_id ? 'border-accent' : 'border-subtle'
+                          selected === t.technique_id
+                            ? 'border-accent'
+                            : ai === 'only'
+                              ? 'border-dashed border-(--sev-medium)'
+                              : 'border-subtle'
                         }`}
                         style={{
-                          backgroundColor:
-                            count > 0 ? `rgba(47, 230, 160, ${intensity})` : 'var(--bg-base)',
+                          backgroundColor: emerald
+                            ? `rgba(47, 230, 160, ${intensity})`
+                            : 'var(--bg-base)',
                         }}
                       >
-                        <div className="truncate text-[11px] leading-4 text-primary">{t.name}</div>
+                        <div className="flex items-center gap-1">
+                          <div className="truncate text-[11px] leading-4 text-primary">{t.name}</div>
+                          {ai && <AiBadge />}
+                        </div>
                         <div className="flex items-center justify-between font-mono text-[10px] leading-4 text-tertiary">
                           <span>{t.technique_id}</span>
-                          {count > 0 && <span className="text-accent">{formatCount(count)}</span>}
+                          {count > 0 && (
+                            <span className={ai === 'only' ? 'text-(--sev-medium)' : 'text-accent'}>
+                              {formatCount(count)}
+                            </span>
+                          )}
                         </div>
                       </button>
                     )
@@ -138,6 +187,21 @@ export function Mitre() {
         )}
       </div>
     </div>
+  )
+}
+
+const AI_HINT =
+  'AI-inferred by the technique classifier — a review-grade hint, capped low and ' +
+  'excluded from alert scoring until validated.'
+
+function AiBadge() {
+  return (
+    <span
+      title={AI_HINT}
+      className="shrink-0 rounded-[3px] border-[0.5px] border-dashed border-(--sev-medium) px-1 text-[9px] font-medium leading-[13px] text-(--sev-medium)"
+    >
+      AI
+    </span>
   )
 }
 
@@ -227,10 +291,13 @@ function TechniqueDrawer({
                 {formatUtcDateTime(c.first_seen)} → {formatUtcDateTime(c.last_seen)}
               </div>
               <div className="mt-0.5 text-[10px] leading-4 text-tertiary">
-                {Object.entries(c.sources)
-                  .map(([s, n]) => `${s}: ${n}`)
-                  .join(' · ')}{' '}
-                · max confidence {c.max_confidence}
+                {Object.entries(c.sources).map(([s, n], i) => (
+                  <span key={s} className={s === 'ai' ? 'text-(--sev-medium)' : undefined}>
+                    {i > 0 ? ' · ' : ''}
+                    {s === 'ai' ? 'AI' : s}: {n}
+                  </span>
+                ))}
+                {' · '}max confidence {c.max_confidence}
               </div>
             </li>
           ))}
