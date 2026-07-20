@@ -105,14 +105,14 @@ async def test_ai_classifier_tags_long_tail_and_quarantines(client, monkeypatch)
     assert body["signatures_examined"] == 1  # both events share one signature
     assert body["events_tagged"] == 2  # fanned out to the whole group
     assert [p["technique_id"] for p in body["proposals"]] == [REAL_ID]  # T9999 dropped
-    assert body["proposals"][0]["confidence"] == 50  # capped
+    assert body["proposals"][0]["confidence"] == 35  # capped to the config cap
 
     # persisted as AI-sourced, capped; hallucination absent
     async with tenant_session(uuid.UUID(tid)) as s:
         rows = (await s.scalars(select(EventTechnique))).all()
         assert len(rows) == 2
         assert {r.technique_id for r in rows} == {REAL_ID}
-        assert all(r.mapping_source == "ai" and r.confidence == 50 for r in rows)
+        assert all(r.mapping_source == "ai" and r.confidence == 35 for r in rows)
 
     # visible in coverage, attributed to 'ai'
     cov = (await client.get("/api/v1/mitre/coverage", headers=auth)).json()

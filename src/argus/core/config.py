@@ -89,7 +89,10 @@ class Settings(BaseSettings):
     # floor, and validates every proposed technique against the ATT&CK catalog
     # so hallucinated ids are dropped.
     ai_classify_max_signatures: int = 20  # distinct signatures per run (1 LLM call each)
-    ai_classify_confidence_cap: int = 50  # AI can never outrank a rules match
+    # AI can never outrank a rules match. Set low (a live eval against APT29
+    # showed the local 7B model is imprecise) — AI mappings are review-grade
+    # hints, not authoritative.
+    ai_classify_confidence_cap: int = 35
     # Quarantine: AI mappings are recorded/visible but do NOT drive correlation
     # scoring until validated against vendor+rules. Flip on to include them.
     correlation_include_ai_techniques: bool = False

@@ -57,13 +57,37 @@ _DESCRIBE_FIELDS = (
 
 _SYSTEM = (
     "You are a precise MITRE ATT&CK classification assistant for a SOC "
-    "platform. Given ONE security event's normalized fields, identify the "
-    "ATT&CK technique ids the event evidences. Rules: only propose a technique "
-    "when the fields clearly indicate it; prefer sub-techniques (T1059.001) "
-    "when precise; NEVER invent technique ids; if the event looks benign or "
-    "you are unsure, return an empty array. Output STRICT JSON only: an array "
-    'of {"technique_id":"T####[.###]","confidence":<1-100 int>,'
-    '"rationale":"<short>"}. No prose, no markdown fences.'
+    "platform. Given ONE security event's normalized fields, decide whether it "
+    "evidences an ATT&CK technique. PRECISION MATTERS FAR MORE THAN RECALL.\n"
+    "\n"
+    "Rules:\n"
+    "- Most events are benign OS/telemetry noise. Default to an EMPTY array.\n"
+    "- Routine activity by system processes (svchost.exe, lsass.exe, "
+    "services.exe, wininit.exe) is NOT a technique unless a clear malicious "
+    "indicator is in the fields.\n"
+    "- Ordinary registry writes (W32Time/time config, TaskCache bookkeeping, "
+    "service config), normal network connections with no suspicious context, "
+    "and built-in cmdlets like Get-Date are NOT techniques.\n"
+    "- Only propose a technique when a SPECIFIC attacker indicator is present: "
+    "encoded/obfuscated commands, credential access to lsass memory, known "
+    "offensive tooling, LOLBins used for download or proxy-execution, "
+    "remote-service execution, and the like.\n"
+    "- NEVER invent technique ids. Name a sub-technique only when the evidence "
+    "is specific; otherwise omit the event rather than guess.\n"
+    "- If unsure, return an empty array.\n"
+    "\n"
+    "Output STRICT JSON only: an array of "
+    '{"technique_id":"T####[.###]","confidence":<1-100 int>,'
+    '"rationale":"<short>"}. No prose, no markdown fences.\n'
+    "\n"
+    "Examples:\n"
+    "Event: process_image: c:\\windows\\system32\\svchost.exe; registry_target: "
+    "HKLM\\System\\CurrentControlSet\\Services\\W32Time\\Config\\LastKnownGoodTime\n"
+    "Answer: []\n"
+    "Event: process_image: powershell.exe; command_line: powershell -enc "
+    "SQBFAFgA\n"
+    'Answer: [{"technique_id":"T1059.001","confidence":80,"rationale":'
+    '"encoded PowerShell command"}]'
 )
 
 
