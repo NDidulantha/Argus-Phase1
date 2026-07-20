@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from argus.api.deps import CurrentUser, get_current_user
 from argus.infrastructure.db.models import EventTechnique, MitreTechnique
 from argus.infrastructure.db.session import admin_session, tenant_session
+from argus.services.ai_classifier import classify_tenant
 
 router = APIRouter(prefix="/mitre", tags=["mitre"])
 
@@ -153,4 +154,41 @@ async def coverage(
         total_events=sum(r.cnt for r in rows),
         by_source=by_source,
         coverage=coverage_list,
+    )
+
+
+class AiProposalOut(BaseModel):
+    technique_id: str
+    confidence: int
+    rationale: str
+
+
+class AiClassifyOut(BaseModel):
+    signatures_examined: int
+    events_tagged: int
+    techniques_written: int
+    proposals: list[AiProposalOut]
+
+
+@router.post("/ai-classify", response_model=AiClassifyOut)
+async def ai_classify(
+    current: Annotated[CurrentUser, Depends(get_current_user)],
+) -> AiClassifyOut:
+    """Run the AI classifier over the tenant's unclassified long tail.
+
+    Augments the deterministic rules: only touches events no vendor/rule tier
+    mapped, validates every proposal against the ATT&CK catalog, and writes
+    them mapping_source='ai' at a capped confidence. These are recorded and
+    visible in coverage but quarantined from alert scoring by default."""
+    result = await classify_tenant(current.tenant_id)
+    return AiClassifyOut(
+        signatures_examined=result.signatures_examined,
+        events_tagged=result.events_tagged,
+        techniques_written=result.techniques_written,
+        proposals=[
+            AiProposalOut(
+                technique_id=p.technique_id, confidence=p.confidence, rationale=p.rationale
+            )
+            for p in result.proposals
+        ],
     )

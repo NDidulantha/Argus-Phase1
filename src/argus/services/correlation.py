@@ -36,6 +36,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from argus.core.config import get_settings
 from argus.infrastructure.db.models import (
     EntityEdge,
     EventTechnique,
@@ -84,20 +85,23 @@ async def correlate_tenant(
 ) -> int:
     """(Re)build open evidence objects for a tenant. Returns objects written."""
     # Pull technique-bearing events joined to their techniques, ordered by
-    # host then time so we can walk them into per-host time windows.
-    rows = (
-        await session.execute(
-            select(
-                NormalizedEvent.id,
-                NormalizedEvent.host_name,
-                NormalizedEvent.event_time,
-                EventTechnique.technique_id,
-                EventTechnique.confidence,
-            )
-            .join(EventTechnique, EventTechnique.normalized_event_id == NormalizedEvent.id)
-            .order_by(NormalizedEvent.host_name, NormalizedEvent.event_time)
+    # host then time so we can walk them into per-host time windows. AI-inferred
+    # mappings are quarantined from scoring by default (they are recorded and
+    # visible, but must not inflate alerts until validated against vendor+rules).
+    stmt = (
+        select(
+            NormalizedEvent.id,
+            NormalizedEvent.host_name,
+            NormalizedEvent.event_time,
+            EventTechnique.technique_id,
+            EventTechnique.confidence,
         )
-    ).all()
+        .join(EventTechnique, EventTechnique.normalized_event_id == NormalizedEvent.id)
+        .order_by(NormalizedEvent.host_name, NormalizedEvent.event_time)
+    )
+    if not get_settings().correlation_include_ai_techniques:
+        stmt = stmt.where(EventTechnique.mapping_source != "ai")
+    rows = (await session.execute(stmt)).all()
     if not rows:
         return 0
 

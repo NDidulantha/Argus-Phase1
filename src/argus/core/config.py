@@ -82,6 +82,18 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
 
+    # AI technique classifier (Phase 3): augments the deterministic rules on
+    # the ambiguous long tail — events no vendor/rule tier classified. It runs
+    # as an on-demand batch (LLM calls are too slow for inline ingest), tags
+    # its mappings mapping_source='ai' at a capped confidence BELOW the rules
+    # floor, and validates every proposed technique against the ATT&CK catalog
+    # so hallucinated ids are dropped.
+    ai_classify_max_signatures: int = 20  # distinct signatures per run (1 LLM call each)
+    ai_classify_confidence_cap: int = 50  # AI can never outrank a rules match
+    # Quarantine: AI mappings are recorded/visible but do NOT drive correlation
+    # scoring until validated against vendor+rules. Flip on to include them.
+    correlation_include_ai_techniques: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:
