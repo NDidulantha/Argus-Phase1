@@ -63,3 +63,22 @@ async def flush_pending() -> None:
     tasks = [t for t in _pending.values() if not t.done()]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def cancel_pending() -> None:
+    """Cancel and drop every armed timer.
+
+    Tests dispose the DB engine after each test on a per-test event loop; a
+    debounced task still sleeping (or mid-correlation) when that happens would
+    either race the pool teardown or leak its reference into the next test.
+    Cancelling and clearing here keeps each test hermetic. Safe in production
+    shutdown too — pending correlations are cheap to drop and idempotent to
+    rebuild on the next ingest.
+    """
+    tasks = list(_pending.values())
+    _pending.clear()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

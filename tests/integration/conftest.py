@@ -64,12 +64,19 @@ def migrated_db() -> None:
 
 @pytest.fixture(autouse=True)
 async def _fresh_engine():
-    """Dispose the shared engine after each test.
+    """Cancel background tasks, then dispose the shared engine, after each test.
 
-    pytest-asyncio gives every test its own event loop; an asyncpg pool
-    created on one loop cannot be reused on another.
+    pytest-asyncio gives every test its own event loop; an asyncpg pool created
+    on one loop cannot be reused on another. Ingest arms a debounced background
+    correlation task (services/auto_correlation); if one is still sleeping or
+    mid-query when we dispose the engine it races the pool teardown and its
+    task reference leaks into the next test's loop — the source of the
+    intermittent cross-test failures. Draining them first makes each test
+    hermetic.
     """
     from argus.infrastructure.db.session import dispose_engine
+    from argus.services import auto_correlation
 
     yield
+    await auto_correlation.cancel_pending()
     await dispose_engine()

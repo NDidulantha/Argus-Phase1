@@ -48,10 +48,13 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 async def dispose_engine() -> None:
     global _engine, _session_factory
-    if _engine is not None:
-        await _engine.dispose()
-        _engine = None
-        _session_factory = None
+    # Clear the module state FIRST, then dispose. If dispose() raises (e.g. a
+    # background task still held a connection as the event loop tore down), the
+    # next caller must still get a fresh engine — leaving a half-disposed
+    # engine bound to a dead loop here would poison every subsequent request.
+    engine, _engine, _session_factory = _engine, None, None
+    if engine is not None:
+        await engine.dispose()
 
 
 @asynccontextmanager
